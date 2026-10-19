@@ -44,6 +44,21 @@ class ImportRepositoryRequest(BaseModel):
             )
         return v.rstrip("/")
 
+    @field_validator("branch")
+    @classmethod
+    def validate_branch(cls, v: str) -> str:
+        """Validate that the branch name cannot inject git CLI options."""
+        import re
+
+        cleaned = v.strip()
+        if not cleaned:
+            return "main"
+        if cleaned.startswith("-") or ".." in cleaned or not re.match(r"^[a-zA-Z0-9._/-]+$", cleaned):
+            raise ValueError(
+                f"Invalid branch name '{v}'. Branch must not start with '-' or contain '..'"
+            )
+        return cleaned
+
 
 # ── Responses ────────────────────────────────────────────────────────────────
 

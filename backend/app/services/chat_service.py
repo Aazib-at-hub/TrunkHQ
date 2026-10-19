@@ -22,6 +22,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message, MessageSource
 from app.rag.generator import RAGGenerator
 from app.repositories.conversation_repo import ConversationRepository
+from app.repositories.graph_repo import GraphRepository
 from app.repositories.message_repo import MessageRepository
 from app.repositories.repository_repo import RepositoryRepository
 from app.retrieval.retriever import RetrieverService
@@ -37,6 +38,7 @@ class ChatService:
         self._repo_dao = RepositoryRepository(session)
         self._conv_dao = ConversationRepository(session)
         self._msg_dao = MessageRepository(session)
+        self._graph_dao = GraphRepository(session)
         self._settings = get_settings()
 
     async def ask_question(
@@ -45,6 +47,7 @@ class ChatService:
         repository_id: UUID,
         question: str,
         conversation_id: Optional[UUID] = None,
+        context_mode: str = "rag",
     ) -> tuple[Conversation, Message, list[MessageSource]]:
         """
         Execute RAG question-answering workflow on repository.
@@ -99,12 +102,49 @@ class ChatService:
         decision_service = get_decision_service()
         ranked_chunks = await decision_service.filter_and_rank(question, chunks)
 
+        # 5b. Graph-enhanced context extraction
+        graph_context: Optional[str] = None
+        if context_mode == "graph_enhanced":
+            graph_lines: list[str] = []
+            words = [w.strip("?,.:;()[]\"'") for w in question.split() if len(w) > 3]
+            matched_nodes = []
+            for word in words[:4]:
+                found = await self._graph_dao.search_nodes(
+                    workspace_id=user_id,
+                    repository_id=repository_id,
+                    query=word,
+                    limit=2,
+                )
+                matched_nodes.extend(found)
+
+            seen_ids = set()
+            for node in matched_nodes[:3]:
+                if node.id in seen_ids:
+                    continue
+                seen_ids.add(node.id)
+                nbrs = await self._graph_dao.get_neighbors(
+                    workspace_id=user_id,
+                    node_id=node.id,
+                    limit=10,
+                )
+                graph_lines.append(f"Entity: {node.name} ({node.node_type}) at {node.source_uri or 'unknown'}")
+                for out_e in nbrs["outgoing_edges"][:5]:
+                    tgt_name = next((n.name for n in nbrs["neighbors"] if n.id == out_e.target_node_id), str(out_e.target_node_id))
+                    graph_lines.append(f"  - [{out_e.edge_type}] -> {tgt_name} (confidence={out_e.confidence})")
+                for in_e in nbrs["incoming_edges"][:5]:
+                    src_name = next((n.name for n in nbrs["neighbors"] if n.id == in_e.source_node_id), str(in_e.source_node_id))
+                    graph_lines.append(f"  - <- [{in_e.edge_type}] from {src_name} (confidence={in_e.confidence})")
+
+            if graph_lines:
+                graph_context = "\n".join(graph_lines)
+
         # 6. Generate answer
         llm_service = get_llm_service()
         generator = RAGGenerator(llm_service)
         rag_output = await generator.generate_answer(
             question=question,
             retrieved_chunks=ranked_chunks,
+            graph_context=graph_context,
         )
 
         # 7. Persist assistant message & citations

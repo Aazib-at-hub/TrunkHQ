@@ -23,10 +23,13 @@ from app.embeddings.base import BaseEmbeddingService
 from app.ingestion.cloner import clone_repository
 from app.ingestion.discovery import discover_files
 from app.ingestion.extractor import extract_content
+from app.graph.engine import GraphExtractorEngine
 from app.models.chunk import CodeChunk
 from app.models.file import RepositoryFile
+from app.models.graph import GraphIndexRun
 from app.repositories.chunk_repo import ChunkRepository
 from app.repositories.file_repo import FileRepository
+from app.repositories.graph_repo import GraphRepository
 from app.repositories.repository_repo import RepositoryRepository
 
 logger = get_logger("pipeline")
@@ -57,6 +60,7 @@ class IngestionPipeline:
                 logger.error("Repository not found for ingestion", repo_id=str(repository_id))
                 return
 
+            user_id = repo.user_id
             github_url = repo.github_url
             branch = repo.branch or "main"
 
@@ -111,11 +115,16 @@ class IngestionPipeline:
             all_file_records: list[RepositoryFile] = []
             files_with_chunks: list[tuple[RepositoryFile, list[CodeChunk]]] = []
             all_chunks_to_embed: list[CodeChunk] = []
+            graph_files_payload: list[tuple[str, str, Optional[str]]] = []
 
             for d in discovered:
                 extracted = extract_content(d.absolute_path)
                 if not extracted or not extracted.content.strip():
                     continue
+
+                graph_files_payload.append(
+                    (d.relative_path, extracted.content, extracted.content_hash)
+                )
 
                 file_rec = RepositoryFile(
                     repository_id=repository_id,
@@ -168,11 +177,14 @@ class IngestionPipeline:
             for chunk_obj, emb in zip(all_chunks_to_embed, all_embeddings):
                 chunk_obj.embedding = emb
 
-            # 5. Persist files and chunks in DB
+            # 5. Persist files and chunks in DB (purge obsolete data for re-indexing idempotency)
             async with self._session_factory() as session:
                 file_dao = FileRepository(session)
                 chunk_dao = ChunkRepository(session)
                 repo_dao = RepositoryRepository(session)
+
+                # Clear prior files and cascaded chunks to avoid duplicates
+                await file_dao.delete_by_repository(repository_id)
 
                 for file_rec, chunk_list in files_with_chunks:
                     saved_file = await file_dao.create(file_rec)
@@ -198,6 +210,93 @@ class IngestionPipeline:
                 files=len(all_file_records),
                 chunks=len(all_chunks_to_embed),
             )
+
+            # 6. Sidecar: Relationship Graph Extraction (Isolated from Vector Failure)
+            run_record_id: Optional[UUID] = None
+            try:
+                async with self._session_factory() as session:
+                    graph_dao = GraphRepository(session)
+                    run_record = GraphIndexRun(
+                        workspace_id=user_id,
+                        repository_id=repository_id,
+                        commit_sha=branch,
+                        status="RUNNING",
+                    )
+                    saved_run = await graph_dao.create_index_run(run_record)
+                    run_record_id = saved_run.id
+                    await session.commit()
+
+                    engine = GraphExtractorEngine()
+                    nodes_payload, edges_payload, active_keys = engine.extract_repository_graph(
+                        repository_id=repository_id,
+                        workspace_id=user_id,
+                        files=graph_files_payload,
+                    )
+
+                    key_to_id = await graph_dao.upsert_nodes(
+                        workspace_id=user_id,
+                        repository_id=repository_id,
+                        nodes=nodes_payload,
+                    )
+
+                    resolved_edges: list[dict[str, Any]] = []
+                    for e in edges_payload:
+                        src_id = key_to_id.get(e["source_key"])
+                        tgt_id = key_to_id.get(e["target_key"])
+                        if src_id and tgt_id and src_id != tgt_id:
+                            e_copy = dict(e)
+                            e_copy["source_node_id"] = src_id
+                            e_copy["target_node_id"] = tgt_id
+                            del e_copy["source_key"]
+                            del e_copy["target_key"]
+                            resolved_edges.append(e_copy)
+
+                    edges_count = await graph_dao.upsert_edges(
+                        workspace_id=user_id,
+                        repository_id=repository_id,
+                        edges=resolved_edges,
+                    )
+
+                    del_nodes, del_edges = await graph_dao.reconcile_deleted_entities(
+                        workspace_id=user_id,
+                        repository_id=repository_id,
+                        active_stable_keys=active_keys,
+                    )
+
+                    await graph_dao.update_index_run(
+                        run_id=run_record_id,
+                        status="READY",
+                        nodes_created=len(nodes_payload),
+                        edges_created=edges_count,
+                        nodes_deleted=del_nodes,
+                        edges_deleted=del_edges,
+                    )
+                    await session.commit()
+
+                    logger.info(
+                        "Sidecar graph indexing completed",
+                        repo_id=str(repository_id),
+                        nodes=len(nodes_payload),
+                        edges=edges_count,
+                    )
+            except Exception as graph_err:
+                logger.error(
+                    "Sidecar graph indexing failed (non-fatal)",
+                    repo_id=str(repository_id),
+                    error=str(graph_err),
+                )
+                if run_record_id:
+                    try:
+                        async with self._session_factory() as session:
+                            graph_dao = GraphRepository(session)
+                            await graph_dao.update_index_run(
+                                run_id=run_record_id,
+                                status="FAILED",
+                                error_summary=str(graph_err),
+                            )
+                            await session.commit()
+                    except Exception:
+                        pass
 
         except Exception as exc:
             err_msg = f"{type(exc).__name__}: {str(exc)}"

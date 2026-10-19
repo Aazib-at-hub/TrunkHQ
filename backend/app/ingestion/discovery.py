@@ -79,6 +79,16 @@ def discover_files(
 
             file_abs = root_path / fname
             try:
+                # Security: Ensure symlink does not resolve outside repository root
+                resolved_target = file_abs.resolve()
+                if not resolved_target.is_relative_to(repo_root_resolved):
+                    logger.warning(
+                        "Security: Skipping symlink escaping repo root",
+                        path=str(file_abs),
+                        target=str(resolved_target),
+                    )
+                    continue
+
                 rel_path = file_abs.relative_to(repo_root_resolved)
                 size = file_abs.stat().st_size
             except (OSError, ValueError):

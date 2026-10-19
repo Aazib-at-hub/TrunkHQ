@@ -31,6 +31,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager — runs on startup and shutdown."""
     settings = get_settings()
     setup_logging(settings.log_level)
+    if settings.is_jwt_secret_insecure:
+        if not settings.debug:
+            logger.critical(
+                "SECURITY HAZARD: JWT_SECRET_KEY is using insecure default 'change-me-to-a-random-secret'. "
+                "Must be configured with a high-entropy secret in production."
+            )
+        else:
+            logger.warning(
+                "SECURITY NOTICE: Running in debug mode with default JWT_SECRET_KEY."
+            )
+
     logger.info(
         "cortex_starting",
         version=settings.app_version,

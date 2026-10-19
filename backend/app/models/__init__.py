@@ -6,3 +6,4 @@ from app.models.file import File  # noqa: F401
 from app.models.chunk import CodeChunk  # noqa: F401
 from app.models.conversation import Conversation  # noqa: F401
 from app.models.message import Message, MessageSource  # noqa: F401
+from app.models.graph import GraphNode, GraphEdge, GraphIndexRun, NodeType, EdgeType  # noqa: F401

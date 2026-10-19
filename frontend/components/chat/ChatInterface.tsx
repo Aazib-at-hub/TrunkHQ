@@ -1,12 +1,13 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Send, Bot, User, ArrowLeft, RefreshCw, Sparkles, BookOpen } from "lucide-react";
+import { Send, Bot, User, ArrowLeft, RefreshCw, Sparkles, BookOpen, Network, MessageSquare, Zap, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "../ui/button";
 import { SourceCard } from "./SourceCard";
 import { SourceViewerModal } from "../source-viewer/SourceViewerModal";
+import { RelationshipGraph } from "../graph/RelationshipGraph";
 import { chatApi, repoApi } from "../../lib/api/client";
-import type { Repository, Message, Source } from "../../lib/api/types";
+import type { Repository, Message } from "../../lib/api/types";
 
 interface ChatInterfaceProps {
   repository: Repository;
@@ -14,18 +15,87 @@ interface ChatInterfaceProps {
 }
 
 export function ChatInterface({ repository, onBack }: ChatInterfaceProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "initial-assistant-greeting",
-      role: "assistant",
-      content: `Hello! I have indexed **${repository.name}**. Ask me anything about the architecture, key algorithms, auth flows, or file locations. All responses will cite exact lines in the repository.`,
-      sources: [],
-      created_at: new Date().toISOString(),
-    },
-  ]);
+  const [activeTab, setActiveTab] = useState<"chat" | "graph">("chat");
+  const [contextMode, setContextMode] = useState<"rag" | "graph_enhanced">("graph_enhanced");
+
+  const [currentRepo, setCurrentRepo] = useState<Repository>(repository);
+  const [reindexing, setReindexing] = useState(false);
+
+  const isReady = currentRepo.status === "READY";
+  const isFailed = currentRepo.status === "FAILED";
+  const isProcessing = !isReady && !isFailed;
+
+  const [messages, setMessages] = useState<Message[]>(() => {
+    if (repository.status === "READY") {
+      return [
+        {
+          id: "initial-assistant-greeting",
+          role: "assistant",
+          content: `Hello! I have indexed **${repository.name}** (${repository.file_count} files, ${repository.chunk_count} chunks). Ask me anything about the architecture, key algorithms, auth flows, or file locations. All responses cite exact lines in the repository.`,
+          sources: [],
+          created_at: new Date().toISOString(),
+        },
+      ];
+    }
+    return [];
+  });
+
   const [inputQuestion, setInputQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+
+  // Status Polling Effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    let isCancelled = false;
+
+    const pollStatus = async () => {
+      try {
+        const res = await repoApi.getStatus(currentRepo.id);
+        if (isCancelled) return;
+
+        setCurrentRepo((prev) => ({
+          ...prev,
+          status: res.status,
+          file_count: res.file_count,
+          chunk_count: res.chunk_count,
+        }));
+
+        if (res.status === "READY") {
+          // Greet user if messages are empty
+          setMessages((prev) => {
+            if (prev.length === 0) {
+              return [
+                {
+                  id: "initial-assistant-greeting",
+                  role: "assistant",
+                  content: `Hello! I have indexed **${currentRepo.name}** (${res.file_count} files, ${res.chunk_count} chunks). Ask me anything about the architecture, key algorithms, auth flows, or file locations. All responses cite exact lines in the repository.`,
+                  sources: [],
+                  created_at: new Date().toISOString(),
+                },
+              ];
+            }
+            return prev;
+          });
+        } else if (res.status !== "FAILED") {
+          timer = setTimeout(pollStatus, 2500);
+        }
+      } catch {
+        if (!isCancelled) {
+          timer = setTimeout(pollStatus, 4000);
+        }
+      }
+    };
+
+    if (currentRepo.status !== "READY" && currentRepo.status !== "FAILED") {
+      pollStatus();
+    }
+
+    return () => {
+      isCancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [currentRepo.id, currentRepo.status, currentRepo.name]);
 
   // Source viewer modal state
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -67,6 +137,7 @@ export function ChatInterface({ repository, onBack }: ChatInterfaceProps) {
       const response = await chatApi.askQuestion(repository.id, {
         question: query,
         conversation_id: conversationId,
+        context_mode: contextMode,
       });
 
       setConversationId(response.conversation_id);
@@ -122,29 +193,162 @@ export function ChatInterface({ repository, onBack }: ChatInterfaceProps) {
           <div className="h-4 w-px bg-border-default" />
           <div className="flex items-center gap-2">
             <span className="font-semibold text-text-primary text-sm">
-              {repository.name}
+              {currentRepo.name}
             </span>
             <span className="font-mono text-xs text-text-tertiary">
-              ({repository.branch})
+              ({currentRepo.branch})
             </span>
+            {isProcessing && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-300 border border-amber-500/20 animate-pulse ml-1">
+                <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
+                <span>{currentRepo.status}...</span>
+              </span>
+            )}
+            {isFailed && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-rose-500/10 text-rose-300 border border-rose-500/20 ml-1">
+                <AlertCircle className="w-3 h-3 text-rose-400" />
+                <span>Failed</span>
+              </span>
+            )}
+          </div>
+
+          {/* View Switcher Tabs */}
+          <div className="flex items-center gap-1 bg-[#1a1b25] p-1 rounded-lg border border-border-default ml-4">
+            <button
+              onClick={() => setActiveTab("chat")}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                activeTab === "chat"
+                  ? "bg-accent text-white shadow-sm"
+                  : "text-text-secondary hover:text-text-primary"
+              }`}
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>Chat & RAG</span>
+            </button>
+            <button
+              onClick={() => setActiveTab("graph")}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                activeTab === "graph"
+                  ? "bg-accent text-white shadow-sm"
+                  : "text-text-secondary hover:text-text-primary"
+              }`}
+            >
+              <Network className="w-3.5 h-3.5" />
+              <span>Relationship Graph</span>
+            </button>
           </div>
         </div>
 
         <div className="flex items-center gap-3 text-xs text-text-secondary">
+          {activeTab === "chat" && (
+            <button
+              onClick={() =>
+                setContextMode((prev) => (prev === "rag" ? "graph_enhanced" : "rag"))
+              }
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-all ${
+                contextMode === "graph_enhanced"
+                  ? "bg-sky-500/10 text-sky-300 border-sky-500/30"
+                  : "bg-white/5 text-text-tertiary border-border-default"
+              }`}
+              title="Toggle between standard vector RAG and graph-enhanced relationship retrieval"
+            >
+              {contextMode === "graph_enhanced" ? (
+                <Network className="w-3.5 h-3.5 text-sky-400" />
+              ) : (
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span>{contextMode === "graph_enhanced" ? "Graph-Enhanced RAG" : "Vector RAG"}</span>
+            </button>
+          )}
+
           <div className="flex items-center gap-1.5">
             <BookOpen className="h-3.5 w-3.5 text-indigo-400" />
-            <span>{repository.file_count} files</span>
+            <span>{currentRepo.file_count} files</span>
           </div>
           <div className="flex items-center gap-1.5">
             <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
-            <span>{repository.chunk_count} chunks indexed</span>
+            <span>{currentRepo.chunk_count} chunks</span>
           </div>
         </div>
       </div>
 
-      {/* Message List */}
+      {/* Main View Area */}
+      {activeTab === "graph" ? (
+        <RelationshipGraph
+          repositoryId={currentRepo.id}
+          onAskCortex={(prompt) => {
+            setActiveTab("chat");
+            setInputQuestion(prompt);
+          }}
+        />
+      ) : (
+        <>
+          {/* Message List */}
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-4xl space-y-6">
+          {/* Processing Banner */}
+          {isProcessing && (
+            <div className="mx-auto max-w-md rounded-2xl border border-indigo-500/20 bg-gradient-to-b from-indigo-500/10 via-bg-secondary to-bg-secondary p-6 text-center shadow-lg my-8 space-y-4">
+              <div className="relative mx-auto flex h-14 w-14 items-center justify-center">
+                <div className="absolute inset-0 rounded-full border-2 border-indigo-500/20 border-t-indigo-500 animate-spin" />
+                <Bot className="h-6 w-6 text-indigo-400" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-text-primary">
+                  Processing & Indexing Repository
+                </h3>
+                <p className="text-xs text-text-secondary">
+                  {currentRepo.status === "CLONING" && "Cloning repository source tree from GitHub..."}
+                  {currentRepo.status === "INDEXING" && "Extracting AST symbols, chunking source files, and calculating embeddings..."}
+                  {currentRepo.status !== "CLONING" && currentRepo.status !== "INDEXING" && "Preparing codebase and building knowledge graph..."}
+                </p>
+              </div>
+              <div className="flex items-center justify-center gap-4 text-xs font-mono text-text-tertiary border-t border-border-default/60 pt-3">
+                <span className="flex items-center gap-1.5">
+                  <BookOpen className="h-3.5 w-3.5 text-indigo-400" />
+                  {currentRepo.file_count} files
+                </span>
+                <span>•</span>
+                <span className="flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
+                  {currentRepo.chunk_count} chunks
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Failed Banner */}
+          {isFailed && (
+            <div className="mx-auto max-w-md rounded-2xl border border-rose-500/20 bg-rose-500/5 p-6 text-center my-8 space-y-3">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-rose-500/10 text-rose-400">
+                <AlertCircle className="h-6 w-6" />
+              </div>
+              <h3 className="text-sm font-semibold text-text-primary">Indexing Failed</h3>
+              <p className="text-xs text-rose-300">
+                Could not complete codebase indexing. Please check your GitHub repository URL or retry.
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                isLoading={reindexing}
+                onClick={async () => {
+                  setReindexing(true);
+                  try {
+                    await repoApi.reindex(currentRepo.id);
+                    setCurrentRepo((prev) => ({ ...prev, status: "PENDING" }));
+                  } catch (e) {
+                    alert("Reindex failed: " + (e instanceof Error ? e.message : "Unknown error"));
+                  } finally {
+                    setReindexing(false);
+                  }
+                }}
+                className="mt-2 text-xs"
+              >
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry Indexing
+              </Button>
+            </div>
+          )}
+
           {messages.map((msg) => {
             const isUser = msg.role === "user";
             return (
@@ -232,16 +436,22 @@ export function ChatInterface({ repository, onBack }: ChatInterfaceProps) {
         >
           <input
             type="text"
-            placeholder={`Ask a question about ${repository.name}... (e.g. How does error handling work?)`}
+            placeholder={
+              isProcessing
+                ? `Repository is currently indexing (${currentRepo.status})... Chat will be enabled shortly.`
+                : isFailed
+                ? "Repository indexing failed. Please retry indexing above."
+                : `Ask a question about ${currentRepo.name}... (e.g. How does error handling work?)`
+            }
             value={inputQuestion}
             onChange={(e) => setInputQuestion(e.target.value)}
-            disabled={loading}
-            className="flex-1 rounded-xl border border-border-default bg-bg-primary px-4 py-2.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 transition-colors"
+            disabled={loading || isProcessing || isFailed}
+            className="flex-1 rounded-xl border border-border-default bg-bg-primary px-4 py-2.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           />
           <Button
             type="submit"
             variant="primary"
-            disabled={!inputQuestion.trim() || loading}
+            disabled={!inputQuestion.trim() || loading || isProcessing || isFailed}
             isLoading={loading}
             className="h-10 px-4 rounded-xl"
           >
@@ -249,6 +459,8 @@ export function ChatInterface({ repository, onBack }: ChatInterfaceProps) {
           </Button>
         </form>
       </div>
+        </>
+      )}
 
       {/* Source Viewer Modal */}
       <SourceViewerModal

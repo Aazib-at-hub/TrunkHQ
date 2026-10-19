@@ -48,16 +48,18 @@ class RAGGenerator:
         question: str,
         retrieved_chunks: Sequence[RetrievedChunk],
         temperature: float = 0.2,
+        graph_context: Optional[str] = None,
     ) -> RAGResult:
         """
-        Build prompt from context chunks, generate response from LLM, and return with citations.
+        Build prompt from context chunks and graph relationships, generate response from LLM, and return with citations.
         """
-        user_prompt = build_user_prompt(question, retrieved_chunks)
+        user_prompt = build_user_prompt(question, retrieved_chunks, graph_context=graph_context)
 
         logger.info(
             "Generating RAG answer",
             question_len=len(question),
             context_chunks=len(retrieved_chunks),
+            has_graph_context=bool(graph_context),
         )
 
         answer_text = await self._llm.generate_response(

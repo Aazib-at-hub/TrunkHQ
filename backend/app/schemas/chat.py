@@ -30,6 +30,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="Existing conversation ID to continue. If null, creates a new conversation.",
     )
+    context_mode: str = Field(
+        default="rag",
+        description="Context strategy: 'rag' (standard vector retrieval) or 'graph_enhanced' (vector + graph traversal)",
+    )
 
 
 # ── Responses ────────────────────────────────────────────────────────────────

@@ -45,6 +45,7 @@ async def chat_with_repository(
         repository_id=repo_id,
         question=data.question,
         conversation_id=data.conversation_id,
+        context_mode=data.context_mode,
     )
 
     msg_resp = MessageResponse(

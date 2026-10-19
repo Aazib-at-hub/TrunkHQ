@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { FileCode, ChevronDown, ChevronUp, Copy, Check } from "lucide-react";
+import { FileCode, Copy, Check } from "lucide-react";
 import type { Source } from "../../lib/api/types";
 
 interface SourceCardProps {

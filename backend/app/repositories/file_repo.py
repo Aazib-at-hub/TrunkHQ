@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.file import RepositoryFile
@@ -65,3 +65,9 @@ class FileRepository:
             .order_by(RepositoryFile.path.asc())
         )
         return result.scalars().all()
+
+    async def delete_by_repository(self, repository_id: UUID) -> int:
+        """Delete all files belonging to a repository (cascades to chunks)."""
+        stmt = delete(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
+        res = await self._session.execute(stmt)
+        return res.rowcount or 0

@@ -5,7 +5,7 @@ import { Modal } from "../ui/modal";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { repoApi } from "../../lib/api/client";
-import { GitFork, GitBranch } from "lucide-react";
+import { GitFork } from "lucide-react";
 import type { Repository } from "../../lib/api/types";
 
 interface ImportRepoModalProps {

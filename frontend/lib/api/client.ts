@@ -83,7 +83,7 @@ async function request<T>(
     return undefined as T;
   }
 
-  let data: any;
+  let data: unknown;
   try {
     data = await response.json();
   } catch {
@@ -177,8 +177,10 @@ export const repoApi = {
 };
 
 export const chatApi = {
-  askQuestion: (repoId: string, body: { question: string; conversation_id?: string | null }) =>
-    post<ChatResponse>(`/api/v1/repositories/${repoId}/chat`, body),
+  askQuestion: (
+    repoId: string,
+    body: { question: string; conversation_id?: string | null; context_mode?: string }
+  ) => post<ChatResponse>(`/api/v1/repositories/${repoId}/chat`, body),
   listConversations: (repoId: string) =>
     get<Conversation[]>(`/api/v1/repositories/${repoId}/conversations`),
   getConversation: (convId: string) =>

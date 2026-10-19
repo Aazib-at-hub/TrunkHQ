@@ -12,7 +12,6 @@ import { repoApi } from "../lib/api/client";
 import type { Repository } from "../lib/api/types";
 import {
   Plus,
-  GitBranch,
   Search,
   Sparkles,
   Terminal,
@@ -31,25 +30,53 @@ export default function Home() {
   const [selectedRepo, setSelectedRepo] = useState<Repository | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const fetchRepositories = async () => {
-    if (!user) {
-      setRepositories([]);
-      return;
-    }
-    setLoadingRepos(true);
-    try {
-      const data = await repoApi.listRepos();
-      setRepositories(data);
-    } catch {
-      // Repos list error handling (e.g. unauth)
-    } finally {
-      setLoadingRepos(false);
-    }
-  };
-
   useEffect(() => {
-    fetchRepositories();
+    let ignore = false;
+    async function loadRepos() {
+      if (!user) {
+        setRepositories([]);
+        return;
+      }
+      try {
+        const data = await repoApi.listRepos();
+        if (!ignore) {
+          setRepositories(data);
+        }
+      } catch {
+        // Ignore unauthenticated / network fetch errors
+      } finally {
+        if (!ignore) {
+          setLoadingRepos(false);
+        }
+      }
+    }
+
+    loadRepos();
+
+    return () => {
+      ignore = true;
+    };
   }, [user]);
+
+  // Poll when repositories are still processing
+  useEffect(() => {
+    if (!user || selectedRepo) return;
+    const hasProcessing = repositories.some(
+      (r) => r.status !== "READY" && r.status !== "FAILED"
+    );
+    if (!hasProcessing) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const data = await repoApi.listRepos();
+        setRepositories(data);
+      } catch {
+        // Ignore polling error
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [user, repositories, selectedRepo]);
 
   const handleSelectRepo = (repo: Repository) => {
     setSelectedRepo(repo);

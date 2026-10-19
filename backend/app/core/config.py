@@ -72,6 +72,11 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",")]
 
     @property
+    def is_jwt_secret_insecure(self) -> bool:
+        """Check if JWT secret is using the default placeholder."""
+        return self.jwt_secret_key == "change-me-to-a-random-secret"
+
+    @property
     def effective_llm_api_key(self) -> Optional[str]:
         """Return the API key for the configured LLM provider."""
         if self.llm_provider == "google":

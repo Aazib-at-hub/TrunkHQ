@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Cpu, GitFork, LogIn, LogOut, RefreshCw, Terminal, User as UserIcon } from "lucide-react";
+import { Cpu, GitFork, LogIn, LogOut, RefreshCw } from "lucide-react";
 import { useAuthStore } from "../lib/store/auth";
 import { healthApi } from "../lib/api/client";
 import type { HealthResponse } from "../lib/api/types";
@@ -16,11 +16,6 @@ export function Navbar({ onOpenAuth, onOpenImport }: NavbarProps) {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [isHealthLoading, setIsHealthLoading] = useState(false);
 
-  useEffect(() => {
-    initialize();
-    checkHealth();
-  }, [initialize]);
-
   const checkHealth = async () => {
     setIsHealthLoading(true);
     try {
@@ -32,6 +27,23 @@ export function Navbar({ onOpenAuth, onOpenImport }: NavbarProps) {
       setIsHealthLoading(false);
     }
   };
+
+  useEffect(() => {
+    let ignore = false;
+    initialize();
+    healthApi
+      .checkHealth()
+      .then((data) => {
+        if (!ignore) setHealth(data);
+      })
+      .catch(() => {
+        if (!ignore) setHealth(null);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [initialize]);
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-border-default bg-bg-secondary/80 backdrop-blur-md">

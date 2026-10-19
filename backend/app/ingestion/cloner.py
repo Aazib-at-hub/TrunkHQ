@@ -60,9 +60,22 @@ async def clone_repository(
     """
     owner, repo_name = validate_github_url(github_url)
 
+    # Validate branch name to prevent git CLI option injection
+    safe_branch = branch.strip() if branch else "main"
+    if safe_branch.startswith("-") or ".." in safe_branch or not re.match(r"^[a-zA-Z0-9._/-]+$", safe_branch):
+        raise ValidationError(f"Invalid branch name '{branch}'. Cannot start with '-' or contain '..'")
+
+    def _force_rm(action, name, exc):
+        import stat
+        try:
+            os.chmod(name, stat.S_IWRITE)
+            os.remove(name)
+        except Exception:
+            pass
+
     if target_dir.exists():
         logger.info("Cleaning up existing target directory", path=str(target_dir))
-        shutil.rmtree(target_dir, ignore_errors=True)
+        shutil.rmtree(target_dir, onerror=_force_rm)
 
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
@@ -76,7 +89,8 @@ async def clone_repository(
         "--depth",
         "1",
         "--branch",
-        branch,
+        safe_branch,
+        "--",
         clone_url,
         str(target_dir),
     ]
@@ -84,7 +98,7 @@ async def clone_repository(
     logger.info(
         "Cloning repository",
         repo=f"{owner}/{repo_name}",
-        branch=branch,
+        branch=safe_branch,
         dest=str(target_dir),
     )
 
@@ -111,11 +125,16 @@ async def clone_repository(
             error=stderr_msg,
         )
 
+        # Ensure directory created by failed clone is cleaned before retry
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+
         fallback_cmd = [
             "git",
             "clone",
             "--depth",
             "1",
+            "--",
             clone_url,
             str(target_dir),
         ]
