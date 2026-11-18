@@ -29,10 +29,10 @@ export function SourceCard({ source, onViewSource }: SourceCardProps) {
       onClick={() =>
         onViewSource?.(source.file_path, source.start_line, source.end_line)
       }
-      className="group flex items-center justify-between gap-3 rounded-lg border border-border-default/80 bg-bg-tertiary/40 px-3 py-2 text-xs hover:border-indigo-500/40 hover:bg-bg-tertiary transition-all cursor-pointer"
+      className="group flex items-center justify-between gap-3 rounded-lg border border-border-default/80 bg-bg-tertiary/40 px-3 py-2 text-xs hover:border-emerald-500/40 hover:bg-bg-tertiary transition-all cursor-pointer"
     >
       <div className="flex items-center gap-2 min-w-0">
-        <FileCode className="h-4 w-4 text-indigo-400 shrink-0" />
+        <FileCode className="h-4 w-4 text-emerald-400 shrink-0" />
         <span className="font-mono text-text-primary truncate" title={source.file_path}>
           {source.file_path}
         </span>
@@ -43,7 +43,7 @@ export function SourceCard({ source, onViewSource }: SourceCardProps) {
 
       <div className="flex items-center gap-2 shrink-0">
         {scorePct !== null && (
-          <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300 border border-indigo-500/20">
+          <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 border border-emerald-500/20">
             {scorePct}% match
           </span>
         )}

@@ -1,5 +1,5 @@
 """
-Cortex Engineering — User Model.
+TrunkHQ — User Model.
 
 Represents registered users of the platform. Each user owns repositories,
 conversations, and their associated data.
@@ -7,7 +7,7 @@ conversations, and their associated data.
 
 from __future__ import annotations
 
-from sqlalchemy import String
+from sqlalchemy import Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin, UUIDMixin
@@ -25,6 +25,8 @@ class User(Base, UUIDMixin, TimestampMixin):
         String(50), unique=True, nullable=False, index=True
     )
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    account_type: Mapped[str] = mapped_column(String(32), default="individual", nullable=False)
+    onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Relationships
     repositories = relationship(

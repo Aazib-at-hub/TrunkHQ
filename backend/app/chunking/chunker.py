@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Line-Aware Code and Text Chunker.
+TrunkHQ — Line-Aware Code and Text Chunker.
 
 Splits source code and documentation into overlapping chunks strictly along
 line boundaries, tracking exact 1-indexed start and end line numbers for source citation.

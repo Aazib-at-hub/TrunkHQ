@@ -1,37 +1,20 @@
-# Cortex Engineering — Customer Pilot Readiness Checklist
+# TrunkHQ — Customer Pilot Readiness Checklist
 
-## 1. Startup & Pilot Customer Onboarding Checklist
+## 1. Pre-Pilot Gate Checklist
 
-- [x] **Verified Git Authentication:** Safe public GitHub URL cloning with injection protection.
-- [x] **Deterministic Line-Level Citations:** All RAG responses cite exact line ranges in indexed files.
-- [x] **Zero Duplication on Reindex:** Reindexing safely updates codebase without polluting search results.
-- [x] **Live Ingestion Progress:** Frontend shows step-by-step progress while repository is processing.
-- [x] **Clean Frontend User Experience:** 0 linting errors, 0 runtime exceptions on main navigation and chat.
-- [x] **AST Relationship Graph:** Interactive exploration of classes, functions, and architecture manifests.
-
----
-
-## 2. Customer Demonstration Script
-
-1. **Step 1: Sign in / Register**
-   - Create or log into account. Observe system health badge: "System Online".
-2. **Step 2: Import Repository**
-   - Click **Import Repo**.
-   - Input repository URL: `https://github.com/pallets/flask` (Branch: `main`).
-   - Observe live status indicator transition: `PENDING` $\rightarrow$ `CLONING` $\rightarrow$ `INDEXING` $\rightarrow$ `READY`.
-3. **Step 3: Grounded Architecture Q&A**
-   - Ask: *"How does Flask handle request dispatching and error handling?"*
-   - Observe the response citing exact line numbers in `src/flask/app.py`.
-   - Click any source citation card to view the exact code snippet.
-4. **Step 4: Explore the Relationship Graph**
-   - Switch tab to **Relationship Graph**.
-   - Toggle **Hierarchy** mode to view top-down module dependencies.
-   - Click on an architectural endpoint or core class (e.g. `Flask`) to inspect 1-hop callers and blast radius.
+- [x] **Backend Unit Suite:** `51 passed, 1 skipped` (`python -m pytest backend\tests\unit -q`).
+- [x] **Frontend Typecheck & Lint:** `npx tsc --noEmit` clean (`0` errors); `npm run lint` `0` errors (`1` pre-existing hook deps warning).
+- [x] **Owner-Only Mutations:** `PATCH`/`DELETE`/re-index and `POST /repositories/{id}/graph/reindex` enforce `repo.user_id == current_user_id`.
+- [x] **Repository-Scoped Graph Queries:** `neighbors`, `paths`, and `impact` enforce `repository_id == repo_id`.
+- [x] **Admin-Only System Diagnostics:** `/api/v1/health` and `/system` gated by `ADMIN_EMAILS`; `/api/v1/live` available for container healthchecks.
+- [x] **JWT Startup Guard:** Non-debug startup aborts if `JWT_SECRET_KEY` uses the insecure default.
+- [ ] **Reverse-Proxy Rate Limiting:** Configure external rate limiting before exposing to untrusted traffic.
+- [ ] **Isolated Single-Org Provisioning:** Provision one dedicated Cortex instance per customer organization (Project Storage House shares repositories across all authenticated users in the same DB).
 
 ---
 
-## 3. Disclosed Limitations for Pilot Customers
+## 2. Disclosed Limitations for Pilot Customers
 
-1. **Repository Limits:** Currently recommended for repositories under 5,000 files / 250 MB.
-2. **Private Repositories:** Requires supplying a GitHub Personal Access Token (`GITHUB_TOKEN`) with read permissions.
-3. **Organization Management:** Pilots are provisioned as dedicated team workspaces. Multi-organization SAML SSO is slated for the Enterprise GA release.
+1. **Single-Organization Workspace Model:** Authenticated users within a single Cortex instance share read access to imported repositories, files, and knowledge graphs (chat conversations remain private per user). Multi-tenant SaaS org isolation is not yet implemented.
+2. **In-Process Background Ingestion:** Repository cloning/indexing runs in-process; server restarts during an active import mark in-flight jobs `FAILED` for manual retry rather than resuming automatically.
+3. **Embedding Dimension Coupling:** `code_chunks.embedding` is fixed at `Vector(384)` (`all-MiniLM-L6-v2`). Switching to 1536-dim OpenAI embeddings requires a schema migration.

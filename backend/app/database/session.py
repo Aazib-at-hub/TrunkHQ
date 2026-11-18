@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Async Database Session.
+TrunkHQ — Async Database Session.
 
 Creates the async SQLAlchemy engine and session factory.
 Provides a dependency-injectable async session generator for FastAPI.
@@ -22,6 +22,8 @@ engine = create_async_engine(
     pool_size=10,
     max_overflow=20,
     pool_pre_ping=True,  # Detect stale connections
+    pool_recycle=1800,
+    pool_timeout=30,
 )
 
 # Session factory — produces async sessions bound to the engine

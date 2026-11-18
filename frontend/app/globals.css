@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* =============================================================================
-   Cortex Engineering — Design System Tokens (Tailwind v4)
+   TrunkHQ — Design System Tokens (Tailwind v4)
    
    A professional developer-tool visual language.
    Dark-first design with carefully curated colors, not generic blue/red/green.
@@ -45,30 +45,31 @@
 }
 
 /* ── CSS Custom Properties (Dark theme — default) ────────────────────────── */
-:root {
-  --bg-primary: #0c0d10;
-  --bg-secondary: #12131a;
-  --bg-tertiary: #1a1b25;
-  --bg-elevated: #1e2030;
-  --bg-surface: #252738;
+:root,
+:root[data-theme="dark"] {
+  --bg-primary: #09090b;
+  --bg-secondary: #111114;
+  --bg-tertiary: #18181b;
+  --bg-elevated: #202024;
+  --bg-surface: #27272a;
 
-  --text-primary: #e8eaf0;
-  --text-secondary: #9ba1b0;
-  --text-tertiary: #636980;
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
 
-  --border-default: #2a2d3e;
-  --border-subtle: #1e2030;
+  --border-default: #27272a;
+  --border-subtle: #18181b;
 
-  /* Accent — Electric Indigo */
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-muted: rgba(99, 102, 241, 0.15);
+  /* Accent — Precision Emerald */
+  --accent: #10b981;
+  --accent-hover: #34d399;
+  --accent-muted: rgba(16, 185, 129, 0.12);
 
   /* Semantic */
   --success: #34d399;
   --warning: #fbbf24;
   --error: #f87171;
-  --info: #60a5fa;
+  --info: #38bdf8;
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -77,8 +78,36 @@
 }
 
 /* ── Light theme override ──────────────────────────────────────────────── */
+:root[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #f1f5f9;
+  --bg-tertiary: #e2e8f0;
+  --bg-elevated: #ffffff;
+  --bg-surface: #ffffff;
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #94a3b8;
+
+  --border-default: #e2e8f0;
+  --border-subtle: #f1f5f9;
+
+  --accent: #059669;
+  --accent-hover: #10b981;
+  --accent-muted: rgba(5, 150, 105, 0.1);
+
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --info: #3b82f6;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --bg-primary: #f8fafc;
     --bg-secondary: #f1f5f9;
     --bg-tertiary: #e2e8f0;

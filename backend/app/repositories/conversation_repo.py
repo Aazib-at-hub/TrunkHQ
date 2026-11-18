@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Conversation Data Access.
+TrunkHQ — Conversation Data Access.
 
 Database operations for Conversation entity scoped by user ownership.
 """

@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Alembic Environment Configuration.
+TrunkHQ — Alembic Environment Configuration.
 
 Configures Alembic to use the application's database URL and
 SQLAlchemy metadata for auto-generating migrations.

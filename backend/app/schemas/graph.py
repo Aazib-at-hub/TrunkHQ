@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Pydantic Schemas for Relationship Graph.
+TrunkHQ — Pydantic Schemas for Relationship Graph.
 """
 
 from __future__ import annotations
@@ -111,8 +111,11 @@ class GraphStatusResponse(BaseModel):
     status: str
     nodes_count: int = 0
     edges_count: int = 0
+    nodes_created: int = 0
+    edges_created: int = 0
     nodes_deleted: int = 0
     edges_deleted: int = 0
+    extractor_version: Optional[str] = None
     error_summary: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -145,4 +148,65 @@ class GraphInsightsResponse(BaseModel):
     hub_nodes: list[HubNodeInsight]
     entrypoints: list[HubNodeInsight]
     key_modules: list[KeyModuleInsight]
+
+
+class ImpactReportRequest(BaseModel):
+    """Request for Cortex Impact Intelligence structured report."""
+
+    node_id: UUID
+    max_depth: int = Field(default=3, ge=1, le=5)
+    change_description: Optional[str] = Field(default=None, max_length=1000)
+
+
+class AffectedComponentItem(BaseModel):
+    """Single affected component in an impact report."""
+
+    node: GraphNodeSchema
+    depth: int
+    evidence_kind: str = "static"
+    confidence: float = 1.0
+
+
+class ImpactReportResponse(BaseModel):
+    """Evidence-backed Cortex Impact Intelligence report."""
+
+    root: GraphNodeSchema
+    summary: str
+    affected_components: list[AffectedComponentItem]
+    related_documents: list[str]
+    potential_risks: list[str]
+    uncertainty_note: str
+    edges: list[GraphEdgeSchema]
+    total_impacted: int
+
+
+class StaleDocFinding(BaseModel):
+    document_id: UUID
+    document_title: str
+    file_name: str
+    reason: str
+    missing_references: list[str] = []
+
+
+class ArchitectureDriftFinding(BaseModel):
+    kind: str
+    entity: str
+    detail: str
+
+
+class IntegrationRiskFinding(BaseModel):
+    severity: str
+    title: str
+    detail: str
+
+
+class EngineeringIntelligenceResponse(BaseModel):
+    """Level 3 Engineering Intelligence report for a project."""
+
+    project_id: UUID
+    summary: str
+    stale_docs: list[StaleDocFinding]
+    architecture_drift: list[ArchitectureDriftFinding]
+    integration_risks: list[IntegrationRiskFinding]
+    uncertainty_note: str
 

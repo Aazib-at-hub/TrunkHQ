@@ -1,5 +1,5 @@
 """
-Cortex Engineering — FastAPI Application Factory.
+TrunkHQ — FastAPI Application Factory.
 
 Creates and configures the FastAPI application with:
 - CORS middleware
@@ -12,18 +12,55 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+from sqlalchemy import update
 
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.exceptions import CortexError
 from app.core.logging import get_logger, setup_logging
+from app.database.session import async_session_factory
+from app.models.graph import GraphIndexRun
+from app.models.repository import Repository
 
 logger = get_logger(__name__)
+
+STALE_RECOVERY_MESSAGE = "Indexing interrupted by server restart. Please re-index this repository."
+
+
+async def recover_stale_repositories(session_factory: Any = async_session_factory) -> int:
+    """Mark repositories and graph runs stuck in in-progress states after an unexpected restart as FAILED."""
+    async with session_factory() as session:
+        repo_res = await session.execute(
+            update(Repository)
+            .where(Repository.status.in_(["PENDING", "CLONING", "INDEXING"]))
+            .values(
+                status="FAILED",
+                error_message=STALE_RECOVERY_MESSAGE,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.execute(
+            update(GraphIndexRun)
+            .where(GraphIndexRun.status == "RUNNING")
+            .values(
+                status="FAILED",
+                error_summary="Graph indexing interrupted by server restart.",
+                completed_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+        return getattr(repo_res, "rowcount", 0) or 0
 
 
 @asynccontextmanager
@@ -37,6 +74,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 "SECURITY HAZARD: JWT_SECRET_KEY is using insecure default 'change-me-to-a-random-secret'. "
                 "Must be configured with a high-entropy secret in production."
             )
+            raise RuntimeError(
+                "Refusing to start in non-debug mode with insecure default JWT_SECRET_KEY."
+            )
         else:
             logger.warning(
                 "SECURITY NOTICE: Running in debug mode with default JWT_SECRET_KEY."
@@ -49,6 +89,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         llm_provider=settings.llm_provider,
         jev_enabled=settings.jev_enabled,
     )
+    try:
+        recovered = await recover_stale_repositories()
+        if recovered:
+            logger.warning("recovered_stale_repositories", count=recovered)
+    except Exception as exc:
+        logger.warning("startup_recovery_skipped", error=str(exc))
+
     yield
     logger.info("cortex_shutdown")
 
@@ -67,14 +114,31 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # ── Rate Limiting (slowapi) ───────────────────────────────────────────
+    limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+    app.add_middleware(SlowAPIMiddleware)
+
     # ── CORS Middleware ──────────────────────────────────────────────────
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    # ── Security Headers & Correlation ID Middleware ─────────────────────
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        request_id = request.headers.get("X-Request-Id") or uuid4().hex
+        response = await call_next(request)
+        response.headers.setdefault("X-Request-Id", request_id)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        return response
 
     # ── Exception Handlers ───────────────────────────────────────────────
 

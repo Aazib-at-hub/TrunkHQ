@@ -30,7 +30,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           className={twMerge(
             clsx(
               "flex h-9 w-full rounded-lg border bg-bg-secondary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary",
-              "border-border-default focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/50",
+              "border-border-default focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50",
               "transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50",
               error && "border-rose-500/60 focus:border-rose-500 focus:ring-rose-500/30",
               className

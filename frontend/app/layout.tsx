@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 
 
 export const metadata: Metadata = {
-  title: "Cortex Engineering — Codebase Intelligence Platform",
-  description: "AI-Powered Codebase Intelligence with pgvector RAG and Source Citations",
+  title: "TrunkHQ — Engineering Intelligence Platform",
+  description: "Engineering Intelligence Platform with Hybrid RAG, Knowledge Graph & Impact Analysis",
 };
 
 export default function RootLayout({
@@ -27,6 +27,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      data-scroll-behavior="smooth"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-bg-primary text-text-primary">

@@ -1,5 +1,5 @@
 """
-Cortex Engineering — OpenAI Embedding Service.
+TrunkHQ — OpenAI Embedding Service.
 
 Generates embeddings using OpenAI API (e.g., text-embedding-3-small).
 """

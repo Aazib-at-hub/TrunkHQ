@@ -1,5 +1,5 @@
 /**
- * Cortex Engineering — Relationship Graph Type Definitions
+ * TrunkHQ — Relationship Graph Type Definitions
  */
 
 export type NodeDomain = "all" | "code" | "architecture" | "knowledge";
@@ -111,8 +111,11 @@ export interface GraphStatusResponse {
   status: string;
   nodes_count: number;
   edges_count: number;
+  nodes_created?: number;
+  edges_created?: number;
   nodes_deleted: number;
   edges_deleted: number;
+  extractor_version?: string | null;
   error_summary?: string | null;
   started_at?: string | null;
   completed_at?: string | null;

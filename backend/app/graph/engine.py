@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Graph Extractor Engine.
+TrunkHQ — Graph Extractor Engine.
 
 Orchestrates multi-language parsing, symbol resolution, architecture discovery,
 and edge validation into an indexed relationship graph.
@@ -14,6 +14,7 @@ from app.core.logging import get_logger
 from app.graph.extractors.manifest import ManifestGraphExtractor
 from app.graph.extractors.python import PythonGraphExtractor
 from app.graph.extractors.typescript import TypeScriptGraphExtractor
+from app.graph.stable_key import normalize_path
 from app.graph.types import ExtractedEdge, ExtractedNode, ExtractionResult
 from app.models.graph import NodeType
 
@@ -33,6 +34,7 @@ class GraphExtractorEngine:
         repository_id: UUID,
         workspace_id: UUID,
         files: Sequence[tuple[str, str, Optional[str]]],  # (relative_path, content, content_hash)
+        commit_sha: Optional[str] = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[str]]:
         """
         Extract unified nodes and edges across all repository files.
@@ -42,6 +44,7 @@ class GraphExtractorEngine:
         """
         all_nodes: dict[str, ExtractedNode] = {}
         all_edges: list[ExtractedEdge] = []
+        repo_paths: set[str] = {normalize_path(p) for p, _, _ in files}
 
         logger.info(
             "Starting relationship graph extraction",
@@ -52,7 +55,7 @@ class GraphExtractorEngine:
         ts_extensions = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 
         for relative_path, content, content_hash in files:
-            norm_path = relative_path.replace("\\", "/")
+            norm_path = normalize_path(relative_path)
 
             # 1. Architecture & manifest extraction (markdown, docker, routes)
             arch_res = self._manifest_extractor.extract(
@@ -72,6 +75,7 @@ class GraphExtractorEngine:
                     relative_path=norm_path,
                     content=content,
                     content_hash=content_hash,
+                    repo_paths=repo_paths,
                 )
                 for node in code_res.nodes:
                     all_nodes[node.stable_key] = node
@@ -82,13 +86,31 @@ class GraphExtractorEngine:
                     relative_path=norm_path,
                     content=content,
                     content_hash=content_hash,
+                    repo_paths=repo_paths,
                 )
                 for node in code_res.nodes:
                     all_nodes[node.stable_key] = node
                 all_edges.extend(code_res.edges)
 
+        # Build (file_path, symbol_name) -> stable_key index for cross-kind resolution
+        symbol_index: dict[tuple[str, str], str] = {}
+        for skey, snode in all_nodes.items():
+            if snode.source_uri and snode.node_type != NodeType.FILE:
+                symbol_index.setdefault((normalize_path(snode.source_uri), snode.name), skey)
+
         # Ensure all referenced target nodes exist or synthesize a placeholder node
         for edge in all_edges:
+            if edge.target_key not in all_nodes and ":symbol:" in edge.target_key:
+                try:
+                    prefix, sym_part = edge.target_key.split(":symbol:", 1)
+                    sym_name = sym_part.rsplit(":", 1)[0]
+                    file_part = prefix.split(":file:", 1)[1] if ":file:" in prefix else ""
+                    resolved_key = symbol_index.get((normalize_path(file_part), sym_name))
+                    if resolved_key:
+                        edge.target_key = resolved_key
+                except Exception:
+                    pass
+
             if edge.target_key not in all_nodes:
                 # Synthesize placeholder symbol or module
                 target_key = edge.target_key
@@ -120,6 +142,7 @@ class GraphExtractorEngine:
                 "properties": n.properties,
                 "source_kind": n.source_kind,
                 "source_uri": n.source_uri,
+                "source_commit": commit_sha,
                 "content_hash": n.content_hash,
                 "status": "active",
             }
@@ -137,6 +160,7 @@ class GraphExtractorEngine:
                     "confidence": e.confidence,
                     "evidence_kind": e.evidence_kind,
                     "source_uri": e.source_uri,
+                    "source_commit": commit_sha,
                     "content_hash": e.content_hash,
                 })
 

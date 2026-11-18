@@ -156,4 +156,124 @@ def test_typescript_ast_extractor() -> None:
     edge_types = {e.edge_type for e in res.edges}
     assert EdgeType.IMPORTS in edge_types
     assert EdgeType.DEFINES in edge_types
+    assert NodeType.METHOD in node_types
+    assert EdgeType.CONTAINS in edge_types
+    method_node = next(n for n in res.nodes if n.node_type == NodeType.METHOD)
+    assert method_node.name == "computeLayout"
+
+
+def test_python_cross_file_alias_resolution_and_commit_sha() -> None:
+    """Verify Python import aliases resolve cross-file CALLS/IMPORTS and commit_sha propagates."""
+    from app.graph.stable_key import make_file_key, make_symbol_key
+
+    repo_id = uuid.uuid4()
+    workspace_id = uuid.uuid4()
+    engine = GraphExtractorEngine()
+
+    files: list[tuple[str, str, Optional[str]]] = [
+        ("pkg/utils.py", "def helper(x: int) -> int:\n    return x + 1\n", "h1"),
+        (
+            "pkg/service.py",
+            "from .utils import helper as h\n\ndef run() -> int:\n    return h(1)\n",
+            "h2",
+        ),
+    ]
+
+    nodes, edges, _ = engine.extract_repository_graph(
+        repository_id=repo_id,
+        workspace_id=workspace_id,
+        files=files,
+        commit_sha="deadbeef1234",
+    )
+
+    assert all(n["source_commit"] == "deadbeef1234" for n in nodes)
+    assert all(e["source_commit"] == "deadbeef1234" for e in edges)
+
+    service_file_key = make_file_key(repo_id, "pkg/service.py")
+    utils_file_key = make_file_key(repo_id, "pkg/utils.py")
+    run_key = make_symbol_key(repo_id, "pkg/service.py", "run", "function")
+    helper_key = make_symbol_key(repo_id, "pkg/utils.py", "helper", "function")
+
+    assert any(
+        e["edge_type"] == EdgeType.IMPORTS
+        and e["source_key"] == service_file_key
+        and e["target_key"] == utils_file_key
+        for e in edges
+    )
+    assert any(
+        e["edge_type"] == EdgeType.CALLS
+        and e["source_key"] == run_key
+        and e["target_key"] == helper_key
+        for e in edges
+    )
+
+
+def test_typescript_relative_import_and_cross_file_call() -> None:
+    """Verify TS relative imports resolve to .ts/.tsx files and cross-file calls link."""
+    from app.graph.stable_key import make_file_key, make_symbol_key
+
+    repo_id = uuid.uuid4()
+    workspace_id = uuid.uuid4()
+    engine = GraphExtractorEngine()
+
+    files: list[tuple[str, str, Optional[str]]] = [
+        ("frontend/lib/math.ts", "export function add(a: number, b: number) { return a + b; }", "m1"),
+        (
+            "frontend/components/Calc.tsx",
+            "import { add as sum } from '../lib/math';\nexport function Calc() { return sum(1, 2); }",
+            "c1",
+        ),
+    ]
+
+    _, edges, _ = engine.extract_repository_graph(
+        repository_id=repo_id,
+        workspace_id=workspace_id,
+        files=files,
+    )
+
+    calc_file_key = make_file_key(repo_id, "frontend/components/Calc.tsx")
+    math_file_key = make_file_key(repo_id, "frontend/lib/math.ts")
+    add_key = make_symbol_key(repo_id, "frontend/lib/math.ts", "add", "function")
+
+    assert any(
+        e["edge_type"] == EdgeType.IMPORTS
+        and e["source_key"] == calc_file_key
+        and e["target_key"] == math_file_key
+        for e in edges
+    )
+    assert any(
+        e["edge_type"] == EdgeType.CALLS
+        and e["source_key"] == calc_file_key
+        and e["target_key"] == add_key
+        for e in edges
+    )
+
+
+def test_manifest_nextjs_and_sqlalchemy_extraction() -> None:
+    """Verify Next.js route handlers and SQLAlchemy table/READS_FROM/WRITES_TO edges."""
+    repo_id = uuid.uuid4()
+    extractor = ManifestGraphExtractor()
+
+    next_res = extractor.extract(
+        repository_id=repo_id,
+        relative_path="frontend/app/api/projects/[id]/route.ts",
+        content="export async function GET() {}\nexport const POST = async () => {};",
+    )
+    ep_names = {n.name for n in next_res.nodes if n.node_type == NodeType.API_ENDPOINT}
+    assert "GET /api/projects/[id]" in ep_names
+    assert "POST /api/projects/[id]" in ep_names
+    assert any(e.edge_type == EdgeType.EXPOSES for e in next_res.edges)
+
+    sa_res = extractor.extract(
+        repository_id=repo_id,
+        relative_path="backend/app/repositories/repo.py",
+        content=(
+            'class Repo(Base):\n    __tablename__ = "repositories"\n\n'
+            "def get_one(s):\n    return s.execute(select(Repo))\n\n"
+            "def save_one(s):\n    s.execute(insert(Repo))\n"
+        ),
+    )
+    assert any(n.node_type == NodeType.TABLE and n.name == "repositories" for n in sa_res.nodes)
+    assert any(e.edge_type == EdgeType.READS_FROM for e in sa_res.edges)
+    assert any(e.edge_type == EdgeType.WRITES_TO for e in sa_res.edges)
 

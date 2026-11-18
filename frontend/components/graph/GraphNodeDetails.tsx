@@ -34,25 +34,34 @@ export function GraphNodeDetails({
 }: GraphNodeDetailsProps) {
   const [neighborsData, setNeighborsData] = useState<NodeNeighborsResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!node) return;
     let isCancelled = false;
+    const timer = setTimeout(() => {
+      if (isCancelled) return;
+      setLoading(true);
+      setErrorMsg(null);
 
-    graphApi
-      .getNeighbors(repoId, node.id, "both", 60)
-      .then((data) => {
-        if (!isCancelled) setNeighborsData(data);
-      })
-      .catch((err) => {
-        console.error("Failed to load neighbors:", err);
-      })
-      .finally(() => {
-        if (!isCancelled) setLoading(false);
-      });
+      graphApi
+        .getNeighbors(repoId, node.id, "both", 60)
+        .then((data) => {
+          if (!isCancelled) setNeighborsData(data);
+        })
+        .catch((err: unknown) => {
+          if (!isCancelled) {
+            setErrorMsg(err instanceof Error ? err.message : "Failed to load neighbors.");
+          }
+        })
+        .finally(() => {
+          if (!isCancelled) setLoading(false);
+        });
+    }, 0);
 
     return () => {
       isCancelled = true;
+      clearTimeout(timer);
     };
   }, [node, repoId]);
 
@@ -63,7 +72,7 @@ export function GraphNodeDetails({
   const totalRels = inCount + outCount;
 
   return (
-    <aside className="w-84 md:w-96 bg-[#101118]/95 backdrop-blur-xl border-l border-white/10 flex flex-col h-full shadow-2xl z-20 transition-all">
+    <aside className="fixed inset-y-0 right-0 z-30 w-84 md:w-96 lg:static bg-bg-secondary/95 backdrop-blur-xl border-l border-border-default flex flex-col h-full shadow-2xl transition-all">
       {/* Header */}
       <div className="p-4 border-b border-white/5 flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
@@ -91,20 +100,21 @@ export function GraphNodeDetails({
         </div>
         <button
           onClick={onClose}
-          className="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-white/5 transition-colors cursor-pointer"
+          aria-label="Close node details"
+          className="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary transition-colors cursor-pointer"
         >
           <X className="w-4 h-4" />
         </button>
       </div>
 
       {/* Connectivity Metrics Pills */}
-      <div className="px-4 py-2.5 border-b border-white/5 bg-[#151622] flex items-center justify-between text-xs font-mono">
+      <div className="px-4 py-2.5 border-b border-white/5 bg-bg-tertiary flex items-center justify-between text-xs font-mono">
         <div className="flex items-center gap-1.5 text-cyan-400">
           <ArrowDownLeft className="w-3.5 h-3.5" />
           <span>{inCount} Callers</span>
         </div>
         <span className="text-white/20">•</span>
-        <div className="flex items-center gap-1.5 text-indigo-400">
+        <div className="flex items-center gap-1.5 text-emerald-400">
           <ArrowUpRight className="w-3.5 h-3.5" />
           <span>{outCount} Dependencies</span>
         </div>
@@ -141,7 +151,7 @@ export function GraphNodeDetails({
             <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1.5">
               Source Location
             </h3>
-            <div className="p-2.5 rounded-xl bg-[#171822] border border-white/5 flex items-center justify-between text-xs">
+            <div className="p-2.5 rounded-xl bg-bg-tertiary border border-white/5 flex items-center justify-between text-xs">
               <span className="font-mono text-text-primary truncate" title={node.source_uri}>
                 {node.source_uri}
               </span>
@@ -162,7 +172,7 @@ export function GraphNodeDetails({
               <BookOpen className="w-3.5 h-3.5 text-amber-400" />
               <span>Description / Docstring</span>
             </h3>
-            <div className="p-3 rounded-xl bg-[#171822] border border-amber-500/20 text-xs text-text-secondary whitespace-pre-wrap font-sans leading-relaxed">
+            <div className="p-3 rounded-xl bg-bg-tertiary border border-amber-500/20 text-xs text-text-secondary whitespace-pre-wrap font-sans leading-relaxed">
               {node.description}
             </div>
           </div>
@@ -174,7 +184,11 @@ export function GraphNodeDetails({
             Direct Relationships
           </h3>
 
-          {loading ? (
+          {errorMsg ? (
+            <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300">
+              {errorMsg}
+            </div>
+          ) : loading ? (
             <div className="flex items-center justify-center p-6 text-text-tertiary gap-2 text-xs">
               <Loader2 className="w-4 h-4 animate-spin text-accent" />
               <span>Loading connected entities...</span>
@@ -191,16 +205,27 @@ export function GraphNodeDetails({
                   <div className="space-y-1.5">
                     {neighborsData.outgoing_edges.map((edge) => {
                       const target = neighborsData.neighbors.find((n) => n.id === edge.target_node_id);
+                      const confPct = Math.round((edge.confidence ?? 1) * 100);
                       return (
                         <div
                           key={edge.id}
                           onClick={() => target && onSelectNode(target)}
-                          className="flex items-center justify-between p-2 rounded-lg bg-[#171822] hover:bg-[#202130] border border-white/5 hover:border-sky-500/40 cursor-pointer text-xs group transition-all"
+                          className="flex items-center justify-between p-2 rounded-lg bg-bg-tertiary hover:bg-bg-elevated border border-white/5 hover:border-sky-500/40 cursor-pointer text-xs group transition-all"
                         >
                           <div className="truncate flex-1 mr-2">
-                            <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20 mr-1.5 uppercase">
-                              {edge.edge_type}
-                            </span>
+                            <div className="flex items-center flex-wrap gap-1 mb-0.5">
+                              <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20 uppercase">
+                                {edge.edge_type}
+                              </span>
+                              <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-bg-secondary text-text-tertiary border border-border-default">
+                                {confPct}%
+                              </span>
+                              {edge.evidence_kind && (
+                                <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                                  {edge.evidence_kind}
+                                </span>
+                              )}
+                            </div>
                             <span className="text-text-primary group-hover:text-sky-300 font-medium">
                               {target?.name || edge.target_node_id}
                             </span>
@@ -228,16 +253,27 @@ export function GraphNodeDetails({
                   <div className="space-y-1.5">
                     {neighborsData.incoming_edges.map((edge) => {
                       const source = neighborsData.neighbors.find((n) => n.id === edge.source_node_id);
+                      const confPct = Math.round((edge.confidence ?? 1) * 100);
                       return (
                         <div
                           key={edge.id}
                           onClick={() => source && onSelectNode(source)}
-                          className="flex items-center justify-between p-2 rounded-lg bg-[#171822] hover:bg-[#202130] border border-white/5 hover:border-emerald-500/40 cursor-pointer text-xs group transition-all"
+                          className="flex items-center justify-between p-2 rounded-lg bg-bg-tertiary hover:bg-bg-elevated border border-white/5 hover:border-emerald-500/40 cursor-pointer text-xs group transition-all"
                         >
                           <div className="truncate flex-1 mr-2">
-                            <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 mr-1.5 uppercase">
-                              {edge.edge_type}
-                            </span>
+                            <div className="flex items-center flex-wrap gap-1 mb-0.5">
+                              <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 uppercase">
+                                {edge.edge_type}
+                              </span>
+                              <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-bg-secondary text-text-tertiary border border-border-default">
+                                {confPct}%
+                              </span>
+                              {edge.evidence_kind && (
+                                <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                                  {edge.evidence_kind}
+                                </span>
+                              )}
+                            </div>
                             <span className="text-text-primary group-hover:text-emerald-300 font-medium">
                               {source?.name || edge.source_node_id}
                             </span>

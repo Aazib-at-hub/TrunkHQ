@@ -1,5 +1,5 @@
 """
-Cortex Engineering — File Filtering & Language Detection.
+TrunkHQ — File Filtering & Language Detection.
 
 Enforces boundaries on which files are processed: ignores build artifacts,
 binary assets, package managers locks, and identifies source programming languages.

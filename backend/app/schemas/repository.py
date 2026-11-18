@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Repository Schemas.
+TrunkHQ — Repository Schemas.
 
 Request and response schemas for repository import, listing, and status.
 """
@@ -16,6 +16,20 @@ from pydantic import BaseModel, Field, field_validator
 # ── Requests ─────────────────────────────────────────────────────────────────
 
 
+def _normalize_tags(v: Optional[list[str]]) -> Optional[list[str]]:
+    """Trim, lowercase, and deduplicate project tags."""
+    if v is None:
+        return None
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for raw in v:
+        tag = raw.strip().lower()
+        if tag and tag not in seen:
+            seen.add(tag)
+            cleaned.append(tag[:40])
+    return cleaned
+
+
 class ImportRepositoryRequest(BaseModel):
     """Repository import request."""
 
@@ -29,6 +43,32 @@ class ImportRepositoryRequest(BaseModel):
         description="Branch to index",
         max_length=255,
     )
+    description: Optional[str] = Field(
+        default=None,
+        description="Short project overview",
+        max_length=2000,
+    )
+    tags: Optional[list[str]] = Field(
+        default=None,
+        description="Project tags (e.g., backend, rag, fastapi)",
+    )
+    links: Optional[dict[str, str]] = Field(
+        default=None,
+        description="Named external links (e.g., docs, demo, jira)",
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Detailed project notes or architecture summary",
+    )
+    project_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional parent Project UUID to group multiple repositories",
+    )
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        return _normalize_tags(v)
 
     @field_validator("github_url")
     @classmethod
@@ -60,6 +100,21 @@ class ImportRepositoryRequest(BaseModel):
         return cleaned
 
 
+class UpdateRepositoryRequest(BaseModel):
+    """Update project metadata in the storage house."""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    tags: Optional[list[str]] = Field(default=None)
+    links: Optional[dict[str, str]] = Field(default=None)
+    notes: Optional[str] = Field(default=None)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        return _normalize_tags(v)
+
+
 # ── Responses ────────────────────────────────────────────────────────────────
 
 
@@ -67,9 +122,17 @@ class RepositoryResponse(BaseModel):
     """Repository summary for listing."""
 
     id: UUID
+    user_id: UUID
+    organization_id: Optional[UUID] = None
+    project_id: Optional[UUID] = None
+    owner_username: Optional[str] = None
     name: str
     github_url: str
     branch: str
+    description: Optional[str] = None
+    tags: Optional[list[str]] = None
+    links: Optional[dict[str, str]] = None
+    notes: Optional[str] = None
     status: str
     file_count: int
     chunk_count: int

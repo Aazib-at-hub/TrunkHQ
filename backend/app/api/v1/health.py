@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Health Check Endpoint.
+TrunkHQ — Health Check Endpoint.
 
 Provides liveness and readiness probes for the application.
 Checks database connectivity and reports service status.
@@ -8,12 +8,14 @@ Checks database connectivity and reports service status.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_admin
 from app.core.config import get_settings
 from app.database.session import get_db
 
@@ -32,12 +34,24 @@ class HealthResponse(BaseModel):
 
 
 @router.get(
+    "/live",
+    summary="Unauthenticated container liveness probe",
+)
+async def liveness_check() -> dict[str, str]:
+    """Minimal liveness probe for container orchestrators (no diagnostics)."""
+    return {"status": "alive"}
+
+
+@router.get(
     "/health",
     response_model=HealthResponse,
     summary="Health check",
     description="Returns application health status including database connectivity.",
 )
-async def health_check(db: AsyncSession = Depends(get_db)) -> HealthResponse:
+async def health_check(
+    _: UUID = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> HealthResponse:
     """Check application health and database connectivity."""
     settings = get_settings()
 

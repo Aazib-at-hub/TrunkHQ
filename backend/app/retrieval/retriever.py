@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Vector Retrieval Service.
+TrunkHQ — Vector Retrieval Service.
 
 Performs semantic search against pgvector embeddings scoped strictly to a repository,
 returning top-K relevant code chunks with similarity scores and source file paths.
@@ -8,9 +8,10 @@ returning top-K relevant code chunks with similarity scores and source file path
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -37,8 +38,31 @@ class RetrievedChunk:
     similarity_score: float
 
 
+def fuse_rrf(
+    vector_chunks: Sequence[RetrievedChunk],
+    fts_chunks: Sequence[RetrievedChunk],
+    k: int = 60,
+    top_k: int = 5,
+) -> list[RetrievedChunk]:
+    """Fuse vector and full-text results using Reciprocal Rank Fusion (RRF)."""
+    scores: dict[UUID, float] = {}
+    by_id: dict[UUID, RetrievedChunk] = {}
+
+    for rank, chunk in enumerate(vector_chunks, start=1):
+        scores[chunk.chunk_id] = scores.get(chunk.chunk_id, 0.0) + 1.0 / (k + rank)
+        by_id[chunk.chunk_id] = chunk
+
+    for rank, chunk in enumerate(fts_chunks, start=1):
+        scores[chunk.chunk_id] = scores.get(chunk.chunk_id, 0.0) + 1.0 / (k + rank)
+        if chunk.chunk_id not in by_id:
+            by_id[chunk.chunk_id] = chunk
+
+    ranked_ids = sorted(scores.keys(), key=lambda cid: scores[cid], reverse=True)
+    return [by_id[cid] for cid in ranked_ids[:top_k]]
+
+
 class RetrieverService:
-    """Executes semantic search over repository code chunks."""
+    """Executes hybrid (vector + full-text) search over repository code chunks."""
 
     def __init__(
         self,
@@ -48,29 +72,14 @@ class RetrieverService:
         self._session = session
         self._embedding_service = embedding_service
 
-    async def retrieve(
+    async def _vector_search(
         self,
         repository_id: UUID,
         query: str,
-        top_k: int = 5,
-        similarity_threshold: float = 0.0,
+        limit: int,
+        similarity_threshold: float,
     ) -> list[RetrievedChunk]:
-        """
-        Embed search query and retrieve closest chunks in pgvector.
-
-        Args:
-            repository_id: Scoping repository UUID.
-            query: User's question or search term.
-            top_k: Maximum number of chunks to return.
-            similarity_threshold: Minimum cosine similarity score (0.0 - 1.0).
-
-        Returns:
-            List of RetrievedChunk instances sorted descending by similarity.
-        """
-        # 1. Embed query
         query_vector = await self._embedding_service.embed_query(query)
-
-        # 2. Query pgvector cosine distance
         cosine_dist = CodeChunk.embedding.cosine_distance(query_vector)
         stmt = (
             select(CodeChunk, cosine_dist.label("distance"))
@@ -78,21 +87,18 @@ class RetrieverService:
             .where(CodeChunk.repository_id == repository_id)
             .where(CodeChunk.embedding.is_not(None))
             .order_by(cosine_dist.asc())
-            .limit(top_k * 2)  # Fetch extra to filter by threshold
+            .limit(limit)
         )
-
         result = await self._session.execute(stmt)
         rows = result.all()
 
-        retrieved: list[RetrievedChunk] = []
+        chunks: list[RetrievedChunk] = []
         for chunk, dist in rows:
-            # Cosine similarity = 1.0 - distance
             score = max(0.0, 1.0 - float(dist)) if dist is not None else 0.0
             if score < similarity_threshold:
                 continue
-
             file_obj: RepositoryFile = chunk.file
-            retrieved.append(
+            chunks.append(
                 RetrievedChunk(
                     chunk_id=chunk.id,
                     file_id=chunk.file_id,
@@ -105,13 +111,75 @@ class RetrieverService:
                     similarity_score=round(score, 4),
                 )
             )
-            if len(retrieved) >= top_k:
-                break
+        return chunks
+
+    async def _fts_search(
+        self,
+        repository_id: UUID,
+        query: str,
+        limit: int,
+    ) -> list[RetrievedChunk]:
+        if not query.strip():
+            return []
+        try:
+            ts_vec = func.to_tsvector("simple", CodeChunk.content)
+            ts_query = func.websearch_to_tsquery("simple", query)
+            rank_expr = func.ts_rank_cd(ts_vec, ts_query)
+            stmt = (
+                select(CodeChunk, rank_expr.label("fts_rank"))
+                .options(joinedload(CodeChunk.file))
+                .where(CodeChunk.repository_id == repository_id)
+                .where(ts_vec.op("@@")(ts_query))
+                .order_by(rank_expr.desc())
+                .limit(limit)
+            )
+            result = await self._session.execute(stmt)
+            rows = result.all()
+            chunks: list[RetrievedChunk] = []
+            for chunk, fts_rank in rows:
+                file_obj: RepositoryFile = chunk.file
+                chunks.append(
+                    RetrievedChunk(
+                        chunk_id=chunk.id,
+                        file_id=chunk.file_id,
+                        file_path=file_obj.path if file_obj else "unknown",
+                        file_name=file_obj.filename if file_obj else "unknown",
+                        language=chunk.language or "plaintext",
+                        content=chunk.content,
+                        start_line=chunk.start_line,
+                        end_line=chunk.end_line,
+                        similarity_score=round(min(1.0, float(fts_rank or 0.0)), 4),
+                    )
+                )
+            return chunks
+        except Exception as exc:
+            logger.warning("Full-text search fallback to vector-only", error=str(exc))
+            return []
+
+    async def retrieve(
+        self,
+        repository_id: UUID,
+        query: str,
+        top_k: int = 5,
+        similarity_threshold: float = 0.0,
+    ) -> list[RetrievedChunk]:
+        """
+        Run hybrid retrieval (pgvector cosine + PostgreSQL FTS) fused with RRF.
+        """
+        candidate_limit = top_k * 3
+        vector_chunks = await self._vector_search(
+            repository_id, query, candidate_limit, similarity_threshold
+        )
+        fts_chunks = await self._fts_search(repository_id, query, candidate_limit)
+
+        retrieved = fuse_rrf(vector_chunks, fts_chunks, top_k=top_k)
 
         logger.info(
             "Retrieved chunks for query",
             repo_id=str(repository_id),
-            count=len(retrieved),
+            vector_count=len(vector_chunks),
+            fts_count=len(fts_chunks),
+            fused_count=len(retrieved),
             top_score=retrieved[0].similarity_score if retrieved else 0.0,
         )
         return retrieved

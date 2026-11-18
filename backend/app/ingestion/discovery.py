@@ -1,5 +1,5 @@
 """
-Cortex Engineering — File Tree Discovery.
+TrunkHQ — File Tree Discovery.
 
 Traverses cloned repository directories, applies filtering rules,
 and yields metadata for eligible files.

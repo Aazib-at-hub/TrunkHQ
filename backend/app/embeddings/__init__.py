@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Embedding Service Factory.
+TrunkHQ — Embedding Service Factory.
 """
 
 from functools import lru_cache

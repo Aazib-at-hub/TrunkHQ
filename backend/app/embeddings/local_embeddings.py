@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Local Sentence-Transformers Embedding Service.
+TrunkHQ — Local Sentence-Transformers Embedding Service.
 
 Runs embedding inference locally using sentence-transformers (default: all-MiniLM-L6-v2).
 Executes synchronous model calls inside asyncio.to_thread to maintain an unblocked event loop.

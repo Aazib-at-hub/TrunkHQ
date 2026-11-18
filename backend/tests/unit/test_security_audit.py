@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Production Readiness & Security Audit Regression Tests.
+TrunkHQ — Production Readiness & Security Audit Regression Tests.
 
 Validates:
 1. Git branch option injection defenses.

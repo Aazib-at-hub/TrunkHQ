@@ -1,5 +1,5 @@
 """
-Cortex Engineering — SQLAlchemy Declarative Base.
+TrunkHQ — SQLAlchemy Declarative Base.
 
 All ORM models inherit from this base. The base includes common columns
 (id, created_at, updated_at) via a mixin to avoid repetition.

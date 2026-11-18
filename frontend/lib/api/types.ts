@@ -1,5 +1,5 @@
 /**
- * Cortex Engineering — Shared TypeScript Types
+ * TrunkHQ — Shared TypeScript Types
  *
  * All API response types and domain models.
  * These mirror the backend Pydantic schemas.
@@ -11,7 +11,111 @@ export interface User {
   id: string;
   email: string;
   username: string;
+  is_admin?: boolean;
+  account_type?: string;
+  onboarding_completed?: boolean;
   created_at: string;
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  account_type: string;
+  owner_id: string;
+  role: string;
+  created_at: string;
+}
+
+export interface OrganizationMember {
+  id: string;
+  organization_id: string;
+  user_id: string;
+  username: string;
+  email: string;
+  role: string;
+  created_at: string;
+}
+
+export interface AuditLogItem {
+  id: string;
+  organization_id: string;
+  actor_user_id: string;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface PlanItem {
+  id: string;
+  code: string;
+  name: string;
+  monthly_price_inr: number;
+  annual_price_inr: number;
+  limits: Record<string, number>;
+  features: Record<string, boolean>;
+  is_active: boolean;
+}
+
+export interface SubscriptionDetail {
+  id: string;
+  organization_id: string;
+  status: string;
+  billing_cycle: string;
+  provider: string;
+  current_period_end: string | null;
+  plan: PlanItem;
+  usage: Record<string, number>;
+}
+
+export interface Project {
+  id: string;
+  organization_id: string;
+  created_by: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  category: string;
+  tech_stack: string[] | null;
+  repository_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectDetail extends Project {
+  repositories: Repository[];
+}
+
+export interface ProjectDocument {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  uploaded_by: string;
+  title: string;
+  file_name: string;
+  file_ext: string;
+  mime_type: string;
+  size_bytes: number;
+  status: string;
+  error_message: string | null;
+  chunk_count: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentChunkItem {
+  id: string;
+  chunk_index: number;
+  section_title: string | null;
+  page_number: number | null;
+  content: string;
+}
+
+export interface ProjectDocumentDetail extends ProjectDocument {
+  chunks: DocumentChunkItem[];
 }
 
 export interface TokenResponse {
@@ -36,9 +140,17 @@ export type RepositoryStatus =
 
 export interface Repository {
   id: string;
+  user_id: string;
+  organization_id?: string | null;
+  project_id?: string | null;
+  owner_username: string | null;
   name: string;
   github_url: string;
   branch: string;
+  description: string | null;
+  tags: string[] | null;
+  links: Record<string, string> | null;
+  notes: string | null;
   status: RepositoryStatus;
   file_count: number;
   chunk_count: number;
@@ -46,6 +158,14 @@ export interface Repository {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface UpdateRepositoryPayload {
+  name?: string;
+  description?: string | null;
+  tags?: string[] | null;
+  links?: Record<string, string> | null;
+  notes?: string | null;
 }
 
 export interface RepositoryFile {

@@ -1,49 +1,44 @@
-# Cortex Engineering — Test and Benchmark Report
+# TrunkHQ — Test and Verification Report
 
-## 1. Test Execution Summary
-
-* **Backend Suite:** `pytest -v` (Python 3.12.8, pytest-9.0.2)
-  - Total Tests: 32
-  - Passed: 31
-  - Skipped: 1 (Windows unprivileged symlink fixture)
-  - Failed: 0
-  - Duration: 2.19s
-* **Frontend Quality Gates:**
-  - `npx tsc --noEmit` (TypeScript 5.x): **EXIT CODE 0 (Clean)**
-  - `npm run lint` (ESLint 9.x): **EXIT CODE 0 (0 errors, 0 warnings)**
+**Verification Date:** November 14, 2026  
 
 ---
 
-## 2. Test Catalog & Verified Assertions
+## 1. Automated Verification Summary (Observed)
 
-| Test File | Test Name | Assertion / Behavior Verified | Status |
-| :--- | :--- | :--- | :--- |
-| `test_auth.py` | `test_password_hashing_and_verification` | BCrypt generates unique salts and verifies plaintext correctly | **PASSED** |
-| `test_auth.py` | `test_jwt_access_token_creation_and_decoding` | Encodes user UUID into subject claim, enforces expiration | **PASSED** |
-| `test_chunker.py` | `test_chunk_text_empty` | Empty input returns 0 chunks | **PASSED** |
-| `test_chunker.py` | `test_chunk_text_small` | Single chunk preserves original text and line numbering | **PASSED** |
-| `test_chunker.py` | `test_chunk_text_multiline_split` | Multi-line text splits along newline boundaries with overlap | **PASSED** |
-| `test_file_filter.py` | `test_should_process_source_code_files` | Detects `.py`, `.ts`, `.tsx`, `.go`, `.rs`, `.md` source files | **PASSED** |
-| `test_file_filter.py` | `test_should_ignore_directories` | Rejects `node_modules`, `.git`, `__pycache__`, `venv` | **PASSED** |
-| `test_file_filter.py` | `test_should_ignore_binaries_and_media` | Ignores `.png`, `.exe`, `.tar`, `.zip`, `.so` | **PASSED** |
-| `test_graph_api.py` | `test_graph_schemas_serialization` | Verifies Pydantic v2 serialization of graph nodes and edges | **PASSED** |
-| `test_graph_extractors.py`| `test_python_ast_extractor` | Parses classes, functions, decorators, and imports into graph | **PASSED** |
-| `test_graph_extractors.py`| `test_typescript_ast_extractor` | Parses TS interfaces, components, arrow functions, and calls | **PASSED** |
-| `test_migrations.py` | `test_migration_chain` | Alembic revisions `001_initial_schema` -> `002_relationship_graph` chain | **PASSED** |
-| `test_prompt.py` | `test_system_prompt_security_instructions` | Prompt demarcates retrieved code chunks to resist injection | **PASSED** |
-| `test_security_audit.py`| `test_branch_validation_blocks_option_injection`| Rejects branches with `--upload-pack`, `-b`, and path escapes | **PASSED** |
-| `test_security_audit.py`| `test_jwt_insecure_default_detection` | Flags default insecure JWT key configuration | **PASSED** |
+| Check | Command | Latest Observed Result |
+| :--- | :--- | :--- |
+| **Backend Unit Tests** | `python -m pytest backend\tests\unit -q` | **`51 passed, 1 skipped in 2.02s`** (exit code `0`) |
+| **Frontend TypeScript** | `cd frontend; npx tsc --noEmit` | **Exit code `0`** (0 type errors) |
+| **Frontend ESLint** | `cd frontend; npm run lint` | **Exit code `0`** (`0 errors, 1 warning`: `react-hooks/exhaustive-deps` in `ChatInterface.tsx:118`) |
+
+> Note: The single skipped test in `backend/tests/unit` is the Windows unprivileged symlink fixture in `test_security_audit.py`.
 
 ---
 
-## 3. Measured Operational Benchmarks
+## 2. Test Suite Coverage Map
 
-* **Interactive API Latency (Health / Auth / List):**
-  - Average: 18ms – 35ms (Local PostgreSQL AsyncPG connection pool).
-* **Vector Search Latency (pgvector HNSW Cosine Distance):**
-  - Average for 2,000 chunks: ~12ms per query.
-* **AST Graph Ingestion Throughput:**
-  - Python AST extractor: ~1,200 lines/sec.
-  - TypeScript lexical extractor: ~2,500 lines/sec.
-* **Frontend Bundle Build & Render:**
-  - React Flow layout engine relaxation: ~45ms for 200 nodes and 300 edges.
+- `test_auth.py`: Password hashing/verification (BCrypt), JWT creation/decoding, `require_admin` RBAC checks.
+- `test_chunker.py`: Empty, small, and multi-line sliding-window chunking.
+- `test_file_filter.py`: Language detection, ignored directories (`node_modules`, `.git`, etc.), binary/media exclusion.
+- `test_graph_api.py`: Graph Pydantic v2 schemas and API route registration.
+- `test_graph_extractors.py`: Python AST and TypeScript lexical graph extraction.
+- `test_migrations.py`: Alembic linear revision chain (`001` -> `002` -> `003` -> `004`).
+- `test_phase2_rag.py`: Phase 2 hybrid retrieval and RAG context assembly unit tests.
+- `test_project_storage_house.py`: Shared read access, owner-only mutation (`PATCH`/`DELETE`/reindex), tag normalization.
+- `test_prompt.py`: System/user prompt construction and source demarcation.
+- `test_retrieval_citation_eval.py`: Retrieval citation formatting and line-range evaluation.
+- `test_security_audit.py`: Git branch option injection rejection, symlink escape protection, JWT insecure default detection.
+- `test_security_hardening.py` *(added in this audit)*:
+  - `test_reindex_graph_rejects_non_owner` (`403 ForbiddenError`)
+  - `test_graph_repo_rejects_cross_repository_nodes` (`get_neighbors`, `find_path`, `get_impact` scoped to `repository_id`)
+  - `test_lifespan_refuses_insecure_jwt_in_non_debug_mode` (`RuntimeError` fail-fast)
+  - `test_liveness_endpoint_and_security_headers` (`/api/v1/live` + security response headers)
+- `test_url_validation.py`: GitHub URL validation.
+
+---
+
+## 3. Unverified Tests & Benchmarks (Not Executed)
+- **Integration / E2E Tests:** No automated Playwright/Cypress E2E suite or live PostgreSQL integration test run was executed in this audit.
+- **Load & Latency Benchmarks:** No staging load test (concurrent imports, concurrent chat/RAG requests, or p95/p99 latency measurement) was executed; prior latency estimates are omitted until measured on target hardware.
+- **Alembic Clean-DB Roundtrip:** `alembic upgrade head` -> `downgrade` -> `upgrade` against a fresh PostgreSQL instance was not executed (note: `004_hybrid_search_indexes.py` `downgrade()` drops `ix_code_chunks_embedding_hnsw` from `001`).

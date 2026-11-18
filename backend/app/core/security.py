@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Security Utilities.
+TrunkHQ — Security Utilities.
 
 Handles password hashing (bcrypt) and JWT token creation/verification.
 All secrets come from environment configuration — nothing is hard-coded.

@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Repositories Module.
+TrunkHQ — Repositories Module.
 
 Data access layer abstractions for clean separation of database queries
 from business logic.

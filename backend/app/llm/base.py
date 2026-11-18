@@ -1,5 +1,5 @@
 """
-Cortex Engineering — LLM Service Base Interface.
+TrunkHQ — LLM Service Base Interface.
 
 Defines the contract for LLM generation backends.
 """

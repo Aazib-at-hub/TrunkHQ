@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Message and MessageSource Models.
+TrunkHQ — Message and MessageSource Models.
 
 Message represents a single chat message (user or assistant).
 MessageSource links an assistant message to the code chunks it cited,

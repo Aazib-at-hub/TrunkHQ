@@ -1,4 +1,4 @@
-# Cortex Engineering — Architecture and Data-Flow Report
+# TrunkHQ — Architecture and Data-Flow Report
 
 ## 1. Verified Architecture Overview
 
@@ -8,7 +8,7 @@
                                   |  (React 19, React Flow,     |
                                   |   Zustand, Tailwind CSS)    |
                                   +--------------+--------------+
-                                                 | HTTPS / REST
+                                                 | HTTP / REST (CORS)
                                                  v
                                   +-----------------------------+
                                   |     FastAPI Backend (v1)    |
@@ -19,14 +19,14 @@
          |                                       |                                       |
          v                                       v                                       v
 +------------------+                   +------------------+                   +--------------------+
-| Ingestion & AST  |                   | Semantic RAG     |                   | Relationship Graph |
+| Ingestion & AST  |                   | Hybrid RAG       |                   | Relationship Graph |
 | Pipeline Engine  |                   | Retrieval Engine |                   | Query & Blast Rad. |
 +--------+---------+                   +--------+---------+                   +---------+----------+
          |                                      |                                       |
          v                                      v                                       v
 +--------------------------------------------------------------------------------------------------+
 |                              PostgreSQL 16 + pgvector Database                                   |
-| - users               - repositories         - files             - code_chunks (HNSW 384d)       |
+| - users               - repositories         - files             - code_chunks (HNSW 384d + GIN) |
 | - conversations       - messages             - message_sources   - graph_nodes                   |
 | - graph_edges         - graph_index_runs                                                         |
 +--------------------------------------------------------------------------------------------------+
@@ -37,63 +37,35 @@
 ## 2. Component Responsibilities
 
 ### Frontend Layer (`frontend/`)
-* **State Management:** Zustand auth store caching JWT tokens in memory with persistent hydration.
-* **Graph Visualization:** React Flow canvas leveraging dynamic force relaxation physics with collision push for high-density symbol clusters.
-* **Context Mode Toggle:** Allows switching between Standard Vector RAG and Graph-Enhanced AST Neighborhood RAG.
-* **Live Ingestion Feedback:** Real-time polling against backend repository status endpoints.
+* **State Management:** Zustand auth store (`lib/store/auth.ts`) and theme store (`lib/store/theme.ts`, Day/Night toggle).
+* **Admin-Only Diagnostics:** `/system` page and Navbar health indicator are gated to admin users (`user?.is_admin`, backed by `ADMIN_EMAILS` on the server).
+* **Graph Visualization (`components/graph/RelationshipGraph.tsx`):** React Flow canvas with organic force-directed and hierarchical layouts, macro cluster hulls, 1-hop neighborhood inspection, shortest path tracing, and blast radius impact highlighting.
+* **Chat & Source Inspection (`components/chat/ChatInterface.tsx`):** Supports Standard RAG and Graph-Enhanced RAG with clickable line-level source citations (`SourceViewerModal`).
 
 ### Backend Layer (`backend/app/`)
-* **Authentication (`api/v1/auth.py`, `core/security.py`):**
-  - BCrypt password hashing.
-  - Stateless JWT token encoding with subject claim user UUID validation.
+* **Authentication & Admin RBAC (`api/v1/auth.py`, `api/deps.py`, `core/security.py`):**
+  - BCrypt password hashing and HS256 JWT bearer authentication.
+  - `require_admin` checks `user.email.lower()` against configured `settings.admin_email_set`.
+* **Health & Liveness (`api/v1/health.py`):**
+  - `GET /api/v1/live`: Unauthenticated liveness probe (`{"status": "alive"}`) for container orchestrators.
+  - `GET /api/v1/health`: Admin-only readiness probe verifying PostgreSQL connectivity (`SELECT 1`) and reporting provider configuration.
 * **Ingestion Pipeline (`ingestion/`):**
-  - **Git Cloner:** Shallow clone (`--depth 1`) using sanitized subprocess arguments with option terminator (`--`).
-  - **File Discovery & Filter:** Prunes binaries, `node_modules`, `dist`, `.git`, test artifacts, and verifies symlink targets stay within repository bounds.
-  - **Chunker:** Sliding window character/line chunker with configurable overlap and newline preservation.
-  - **Vector Embeddings:** Batched embedding via `all-MiniLM-L6-v2` (384 dimensions) persisted to pgvector.
-  - **AST Graph Extractor (`graph/`):** Extracts code declarations, functions, classes, and calls into directed edges.
+  - **Git Cloner:** Shallow clone (`--depth 1`) with branch regex validation (`^[a-zA-Z0-9._/-]+$`) and `--` option terminator.
+  - **File Discovery & Filter:** Ignores binaries, `node_modules`, `.git`, build artifacts, and blocks symlinks escaping the clone root.
+  - **Chunker & Embeddings:** Line-aware chunking and batched `all-MiniLM-L6-v2` (384-dim) embeddings into `code_chunks.embedding` (`Vector(384)`).
+  - **AST/Lexical Graph Extractor (`graph/`):** Extracts modules, classes, functions, calls, imports, and architectural manifest relationships.
+* **Hybrid Retrieval (`rag/retriever.py`):**
+  - Combines pgvector cosine similarity search and PostgreSQL `tsvector` full-text search (GIN indexed in migration `004`).
 
 ---
 
-## 3. Data-Flow Lifecycle: Repository Import to Grounded Answer
+## 3. Data-Flow & Trust Boundaries
 
-```
-[User Import Request]
-        |
-        v
-[Validate URL & Branch] ---> (Rejects flag injection e.g. --upload-pack)
-        |
-        v
-[git clone --depth 1]   ---> Isolated temporary directory: backend/repos/<repo_id>
-        |
-        v
-[File Discovery]        ---> Rejects symlinks pointing outside clone root
-        |
-        v
-[AST Extraction]        ---> Generates stable graph nodes & edges
-        |
-        v
-[Chunking & Embeddings] ---> 384-dimensional dense vectors
-        |
-        v
-[Atomic Purge & Save]   ---> Idempotently deletes old records, saves new files & chunks
-        |
-        v
-[Cleanup Disk]          ---> shutil.rmtree(clone_dest)
-        |
-        v
-[Status -> READY]       ---> Unlocks Chat & Relationship Graph
-```
-
----
-
-## 4. Trust Boundaries & Security Enforcements
-
-1. **User / Tenant Isolation:**
-   - Every API request authenticates via JWT `Bearer` token.
-   - Every database query for repositories, files, chunks, conversations, or graph entities filters by `repository.user_id == current_user_id`.
-   - Cross-tenant data leakage is prevented at both the service layer and SQL statement level.
-2. **Untrusted Code Execution:**
-   - Cloned code is never executed. Only parsed statically via Python AST and lexical regex tokenizers.
-3. **Prompt Injection Mitigations:**
-   - User inputs and retrieved source snippets are strictly demarcated within the system prompt templates in `app/rag/prompt.py`.
+1. **Shared Project Storage House Model:**
+   - Repositories, indexed files, chunks, and graph reads are shared across authenticated users in the same Cortex instance (`get_by_id_shared`, `list_all`).
+   - Mutating operations (`PATCH /repositories/{id}`, `DELETE /repositories/{id}`, `POST /repositories/{id}/reindex`, `POST /repositories/{id}/graph/reindex`) require `repo.user_id == current_user_id`.
+   - `ConversationRepository` isolates chat conversations and message history per `user_id`.
+2. **Untrusted Code Isolation:**
+   - Cloned repositories are parsed statically (Python `ast` + regex/lexical extractors) and never executed. Temporary clones are removed via `shutil.rmtree` in `pipeline.py`.
+3. **Database Schema & Migrations (`backend/alembic/versions/`):**
+   - Linear chain: `001_initial_schema` -> `002_relationship_graph` -> `003_project_storage_house` -> `004_hybrid_search_indexes`.

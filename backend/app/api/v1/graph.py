@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Relationship Graph API Endpoints.
+TrunkHQ — Relationship Graph API Endpoints.
 
 Provides workspace-isolated, repository-aware endpoints for graph slicing,
 node inspection, 1-hop neighborhoods, path finding, search, and blast radius impact analysis.
@@ -13,16 +13,18 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user_id
-from app.core.exceptions import NotFoundError, ValidationError
+from app.api.deps import TenantContext, get_tenant_context
+from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.database.session import get_db
 from app.graph.engine import GraphExtractorEngine
 from app.models.graph import GraphIndexRun
+from app.models.repository import Repository
 from app.repositories.chunk_repo import ChunkRepository
 from app.repositories.file_repo import FileRepository
 from app.repositories.graph_repo import GraphRepository
 from app.repositories.repository_repo import RepositoryRepository
 from app.schemas.graph import (
+    EngineeringIntelligenceResponse,
     FindPathRequest,
     FindPathResponse,
     GraphEdgeSchema,
@@ -31,6 +33,8 @@ from app.schemas.graph import (
     GraphSliceResponse,
     GraphStatusResponse,
     HubNodeInsight,
+    ImpactReportRequest,
+    ImpactReportResponse,
     ImpactRequest,
     ImpactResponse,
     KeyModuleInsight,
@@ -42,13 +46,21 @@ router = APIRouter(tags=["Graph"])
 
 
 async def _verify_repo_access(
-    repo_id: UUID, user_id: UUID, session: AsyncSession
-) -> None:
-    """Ensure repository exists and belongs to current user/workspace."""
+    repo_id: UUID,
+    user_id: UUID,
+    session: AsyncSession,
+    organization_id: Optional[UUID] = None,
+) -> Repository:
+    """Ensure repository exists within the active organization workspace."""
     repo_dao = RepositoryRepository(session)
-    repo = await repo_dao.get_by_id(repo_id, user_id)
+    repo = (
+        await repo_dao.get_by_id_in_org(repo_id, organization_id)
+        if organization_id is not None
+        else await repo_dao.get_by_id_shared(repo_id)
+    )
     if not repo:
         raise NotFoundError("Repository not found")
+    return repo
 
 
 @router.get(
@@ -60,23 +72,27 @@ async def get_repository_graph(
     repo_id: UUID,
     node_types: Optional[list[str]] = Query(None),
     limit: int = Query(default=300, ge=1, le=1000),
-    current_user_id: UUID = Depends(get_current_user_id),
+    offset: int = Query(default=0, ge=0),
+    tenant: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> GraphSliceResponse:
-    """Fetch nodes and connecting edges for a repository within limits."""
-    await _verify_repo_access(repo_id, current_user_id, db)
+    """Fetch bounded, paginated nodes and connecting edges for a repository."""
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
     graph_dao = GraphRepository(db)
 
     nodes = await graph_dao.get_nodes_by_repository(
-        workspace_id=current_user_id,
+        workspace_id=repo.user_id,
         repository_id=repo_id,
         node_types=node_types,
         limit=limit,
+        offset=offset,
     )
 
     node_ids = {n.id for n in nodes}
     edges = await graph_dao.get_edges_by_repository(
-        workspace_id=current_user_id,
+        workspace_id=repo.user_id,
         repository_id=repo_id,
         node_ids=node_ids,
         limit=limit * 2,
@@ -99,14 +115,16 @@ async def get_repository_graph(
 async def get_graph_node(
     repo_id: UUID,
     node_id: UUID,
-    current_user_id: UUID = Depends(get_current_user_id),
+    tenant: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> GraphNodeSchema:
     """Fetch metadata and source details for a specific graph node."""
-    await _verify_repo_access(repo_id, current_user_id, db)
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
     graph_dao = GraphRepository(db)
 
-    node = await graph_dao.get_node(workspace_id=current_user_id, node_id=node_id)
+    node = await graph_dao.get_node(workspace_id=repo.user_id, node_id=node_id)
     if not node or node.repository_id != repo_id:
         raise NotFoundError("Graph node not found")
 
@@ -124,19 +142,22 @@ async def get_node_neighbors(
     direction: str = Query(default="both", pattern="^(in|out|both)$"),
     edge_types: Optional[list[str]] = Query(None),
     limit: int = Query(default=100, ge=1, le=500),
-    current_user_id: UUID = Depends(get_current_user_id),
+    tenant: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> NodeNeighborsResponse:
     """Fetch neighbors, outgoing edges, and incoming edges for an entity."""
-    await _verify_repo_access(repo_id, current_user_id, db)
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
     graph_dao = GraphRepository(db)
 
     res = await graph_dao.get_neighbors(
-        workspace_id=current_user_id,
+        workspace_id=repo.user_id,
         node_id=node_id,
         edge_types=edge_types,
         direction=direction,
         limit=limit,
+        repository_id=repo_id,
     )
     if not res["node"]:
         raise NotFoundError("Graph node not found")
@@ -157,18 +178,21 @@ async def get_node_neighbors(
 async def find_graph_path(
     repo_id: UUID,
     data: FindPathRequest,
-    current_user_id: UUID = Depends(get_current_user_id),
+    tenant: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> FindPathResponse:
     """Compute shortest relationship path connecting source and target nodes."""
-    await _verify_repo_access(repo_id, current_user_id, db)
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
     graph_dao = GraphRepository(db)
 
     steps_raw = await graph_dao.find_path(
-        workspace_id=current_user_id,
+        workspace_id=repo.user_id,
         source_id=data.source_id,
         target_id=data.target_id,
         max_depth=data.max_depth,
+        repository_id=repo_id,
     )
 
     steps: list[PathStepSchema] = []
@@ -192,19 +216,22 @@ async def find_graph_path(
 async def compute_graph_impact(
     repo_id: UUID,
     data: ImpactRequest,
-    current_user_id: UUID = Depends(get_current_user_id),
+    tenant: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> ImpactResponse:
     """Analyze blast radius, affected callers, and related test suites."""
-    await _verify_repo_access(repo_id, current_user_id, db)
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
     graph_dao = GraphRepository(db)
 
     impact_data = await graph_dao.get_impact(
-        workspace_id=current_user_id,
+        workspace_id=repo.user_id,
         node_id=data.node_id,
         max_depth=data.max_depth,
         edge_types=data.edge_types,
         include_tests=data.include_tests,
+        repository_id=repo_id,
     )
 
     if not impact_data["root"]:
@@ -219,6 +246,34 @@ async def compute_graph_impact(
     )
 
 
+@router.post(
+    "/repositories/{repo_id}/graph/impact-report",
+    response_model=ImpactReportResponse,
+    summary="Generate Cortex Impact Intelligence report for a target entity",
+)
+async def generate_impact_report(
+    repo_id: UUID,
+    data: ImpactReportRequest,
+    tenant: TenantContext = Depends(get_tenant_context),
+    db: AsyncSession = Depends(get_db),
+) -> ImpactReportResponse:
+    """Produce an evidence-backed impact report with risks and related documentation."""
+    from app.graph.reasoning import GraphReasoningService
+
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
+    return await GraphReasoningService(db).build_impact_report(
+        workspace_id=repo.user_id,
+        repository_id=repo_id,
+        node_id=data.node_id,
+        max_depth=data.max_depth,
+        change_description=data.change_description,
+        project_id=getattr(repo, "project_id", None),
+        organization_id=tenant.organization_id,
+    )
+
+
 @router.get(
     "/repositories/{repo_id}/graph/search",
     response_model=list[GraphNodeSchema],
@@ -229,15 +284,17 @@ async def search_graph_nodes(
     q: str = Query(..., min_length=1),
     node_type: Optional[str] = Query(None),
     limit: int = Query(default=20, ge=1, le=100),
-    current_user_id: UUID = Depends(get_current_user_id),
+    tenant: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> list[GraphNodeSchema]:
     """Search indexed entities matching query string."""
-    await _verify_repo_access(repo_id, current_user_id, db)
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
     graph_dao = GraphRepository(db)
 
     nodes = await graph_dao.search_nodes(
-        workspace_id=current_user_id,
+        workspace_id=repo.user_id,
         repository_id=repo_id,
         query=q,
         node_type=node_type,
@@ -254,15 +311,17 @@ async def search_graph_nodes(
 async def get_graph_insights(
     repo_id: UUID,
     top_k: int = Query(default=10, ge=1, le=50),
-    current_user_id: UUID = Depends(get_current_user_id),
+    tenant: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> GraphInsightsResponse:
     """Compute and return key hubs, entrypoints, and module clustering."""
-    await _verify_repo_access(repo_id, current_user_id, db)
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
     graph_dao = GraphRepository(db)
 
     insights = await graph_dao.get_insights(
-        workspace_id=current_user_id,
+        workspace_id=repo.user_id,
         repository_id=repo_id,
         top_k=top_k,
     )
@@ -312,15 +371,17 @@ async def get_graph_insights(
 )
 async def get_graph_status(
     repo_id: UUID,
-    current_user_id: UUID = Depends(get_current_user_id),
+    tenant: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> GraphStatusResponse:
     """Inspect latest graph indexing run metrics and status."""
-    await _verify_repo_access(repo_id, current_user_id, db)
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
     graph_dao = GraphRepository(db)
 
     latest_run = await graph_dao.get_latest_index_run(
-        workspace_id=current_user_id,
+        workspace_id=repo.user_id,
         repository_id=repo_id,
     )
 
@@ -335,8 +396,11 @@ async def get_graph_status(
         status=latest_run.status,
         nodes_count=latest_run.nodes_created,
         edges_count=latest_run.edges_created,
+        nodes_created=latest_run.nodes_created,
+        edges_created=latest_run.edges_created,
         nodes_deleted=latest_run.nodes_deleted,
         edges_deleted=latest_run.edges_deleted,
+        extractor_version=latest_run.extractor_version,
         error_summary=latest_run.error_summary,
         started_at=latest_run.started_at,
         completed_at=latest_run.completed_at,
@@ -350,11 +414,15 @@ async def get_graph_status(
 )
 async def reindex_graph(
     repo_id: UUID,
-    current_user_id: UUID = Depends(get_current_user_id),
+    tenant: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ) -> GraphStatusResponse:
     """Extract and index nodes and relationships from existing repository files."""
-    await _verify_repo_access(repo_id, current_user_id, db)
+    repo = await _verify_repo_access(
+        repo_id, tenant.user_id, db, organization_id=tenant.organization_id
+    )
+    if repo.user_id != tenant.user_id:
+        raise ForbiddenError("Only the project owner can reindex the knowledge graph")
 
     file_dao = FileRepository(db)
     chunk_dao = ChunkRepository(db)
@@ -365,7 +433,7 @@ async def reindex_graph(
         raise ValidationError("Repository has no indexed files to extract graph from.")
 
     run_record = GraphIndexRun(
-        workspace_id=current_user_id,
+        workspace_id=repo.user_id,
         repository_id=repo_id,
         status="RUNNING",
     )
@@ -387,12 +455,12 @@ async def reindex_graph(
         engine = GraphExtractorEngine()
         nodes_payload, edges_payload, active_keys = engine.extract_repository_graph(
             repository_id=repo_id,
-            workspace_id=current_user_id,
+            workspace_id=repo.user_id,
             files=graph_files_payload,
         )
 
         key_to_id = await graph_dao.upsert_nodes(
-            workspace_id=current_user_id,
+            workspace_id=repo.user_id,
             repository_id=repo_id,
             nodes=nodes_payload,
         )
@@ -410,13 +478,13 @@ async def reindex_graph(
                 resolved_edges.append(e_copy)
 
         edges_count = await graph_dao.upsert_edges(
-            workspace_id=current_user_id,
+            workspace_id=repo.user_id,
             repository_id=repo_id,
             edges=resolved_edges,
         )
 
         del_nodes, del_edges = await graph_dao.reconcile_deleted_entities(
-            workspace_id=current_user_id,
+            workspace_id=repo.user_id,
             repository_id=repo_id,
             active_stable_keys=active_keys,
         )
@@ -449,3 +517,142 @@ async def reindex_graph(
         )
         await db.commit()
         raise
+
+
+def build_document_reference_links(
+    docs_with_text: list[tuple[UUID, str, str]],
+    code_nodes: list[GraphNodeSchema],
+    project_id: UUID,
+) -> tuple[list[GraphNodeSchema], list[GraphEdgeSchema]]:
+    """
+    Create deterministic DOCUMENT nodes and DOCUMENTS edges only when a project
+    document explicitly mentions a code node's name (>= 4 chars) or source_uri.
+    """
+    import uuid as _uuid
+
+    doc_nodes: list[GraphNodeSchema] = []
+    doc_edges: list[GraphEdgeSchema] = []
+    for doc_id, title, combined_text in docs_with_text:
+        text_lower = combined_text.lower()
+        doc_node = GraphNodeSchema(
+            id=doc_id,
+            node_type="document",
+            stable_key=f"project:{project_id}:document:{doc_id}",
+            name=title,
+            qualified_name=title,
+            description="Uploaded project documentation",
+            properties={"document_id": str(doc_id)},
+            source_kind="documentation",
+            source_uri=title,
+        )
+        doc_nodes.append(doc_node)
+        for cn in code_nodes:
+            matched = False
+            if cn.source_uri and len(cn.source_uri) >= 4 and cn.source_uri.lower() in text_lower:
+                matched = True
+            elif len(cn.name) >= 4 and cn.name.lower() in text_lower:
+                matched = True
+            if matched:
+                edge_uuid = _uuid.uuid5(_uuid.NAMESPACE_URL, f"{doc_id}:DOCUMENTS:{cn.id}")
+                doc_edges.append(
+                    GraphEdgeSchema(
+                        id=edge_uuid,
+                        source_node_id=doc_id,
+                        target_node_id=cn.id,
+                        edge_type="DOCUMENTS",
+                        confidence=0.75,
+                        evidence_kind="doc_reference",
+                    )
+                )
+    return doc_nodes, doc_edges
+
+
+@router.get(
+    "/projects/{project_id}/graph",
+    response_model=GraphSliceResponse,
+    summary="Get cross-repository and document knowledge graph for a project",
+)
+async def get_project_graph(
+    project_id: UUID,
+    node_types: Optional[list[str]] = Query(None),
+    limit: int = Query(default=300, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    tenant: TenantContext = Depends(get_tenant_context),
+    db: AsyncSession = Depends(get_db),
+) -> GraphSliceResponse:
+    """Fetch bounded subgraph across all repositories and documents in a project."""
+    from app.repositories.document_repo import DocumentRepository
+    from app.repositories.project_repo import ProjectRepository
+
+    project = await ProjectRepository(db).get_by_id_in_org(
+        project_id, tenant.organization_id
+    )
+    if not project:
+        raise NotFoundError("Project not found")
+
+    repo_ids = [r.id for r in (getattr(project, "repositories", None) or [])]
+    graph_dao = GraphRepository(db)
+    raw_nodes = await graph_dao.get_nodes_by_repositories(
+        repository_ids=repo_ids,
+        node_types=node_types,
+        limit=limit,
+        offset=offset,
+    )
+    node_ids = {n.id for n in raw_nodes}
+    raw_edges = await graph_dao.get_edges_by_repositories(
+        repository_ids=repo_ids,
+        node_ids=node_ids,
+        limit=limit * 2,
+    )
+
+    code_node_schemas = [GraphNodeSchema.model_validate(n) for n in raw_nodes]
+    edge_schemas = [GraphEdgeSchema.model_validate(e) for e in raw_edges]
+
+    doc_dao = DocumentRepository(db)
+    docs = await doc_dao.list_by_project(project_id, tenant.organization_id)
+    docs_with_text: list[tuple[UUID, str, str]] = []
+    for doc in docs:
+        chunks = await doc_dao.list_chunks(doc.id, tenant.organization_id)
+        docs_with_text.append((doc.id, doc.title, "\n".join(c.content for c in chunks)))
+
+    doc_nodes, doc_edges = build_document_reference_links(
+        docs_with_text, code_node_schemas, project_id
+    )
+    all_nodes = code_node_schemas + doc_nodes
+    all_edges = edge_schemas + doc_edges
+
+    return GraphSliceResponse(
+        repository_id=repo_ids[0] if repo_ids else project_id,
+        nodes=all_nodes,
+        edges=all_edges,
+        total_nodes=len(all_nodes),
+        total_edges=len(all_edges),
+    )
+
+
+@router.get(
+    "/projects/{project_id}/intelligence",
+    response_model=EngineeringIntelligenceResponse,
+    summary="Level 3 Engineering Intelligence: stale-doc, drift, and integration risk report",
+)
+async def get_project_engineering_intelligence(
+    project_id: UUID,
+    tenant: TenantContext = Depends(get_tenant_context),
+    db: AsyncSession = Depends(get_db),
+) -> EngineeringIntelligenceResponse:
+    """Detect stale documentation, OpenAPI/code drift, and proactive integration risks."""
+    from app.graph.reasoning import GraphReasoningService
+    from app.repositories.project_repo import ProjectRepository
+
+    project = await ProjectRepository(db).get_by_id_in_org(
+        project_id, tenant.organization_id
+    )
+    if not project:
+        raise NotFoundError("Project not found")
+
+    repos = list(getattr(project, "repositories", None) or [])
+    return await GraphReasoningService(db).build_engineering_intelligence_report(
+        project_id=project_id,
+        organization_id=tenant.organization_id,
+        repositories=repos,
+    )

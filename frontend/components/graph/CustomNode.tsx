@@ -19,6 +19,8 @@ import {
   BookOpen,
 } from "lucide-react";
 
+import type { MacroClusterMeta } from "../../lib/graph/layout";
+
 export interface CustomNodeData {
   node: GraphNode;
   isSelected?: boolean;
@@ -27,6 +29,8 @@ export interface CustomNodeData {
   inDegree?: number;
   outDegree?: number;
   role?: string;
+  cluster?: MacroClusterMeta;
+  isUnconnected?: boolean;
   onSelect?: (node: GraphNode) => void;
 }
 
@@ -40,7 +44,7 @@ function getIcon(type: string, sourceKind: string) {
     case "method":
       return <Code2 className="w-3.5 h-3.5 text-sky-400" />;
     case "class":
-      return <Box className="w-3.5 h-3.5 text-indigo-400" />;
+      return <Box className="w-3.5 h-3.5 text-emerald-400" />;
     case "file":
       return <FileCode className="w-3.5 h-3.5 text-blue-400" />;
     case "service":
@@ -53,7 +57,7 @@ function getIcon(type: string, sourceKind: string) {
     case "document":
       return <FileText className="w-3.5 h-3.5 text-amber-400" />;
     case "test":
-      return <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />;
+      return <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />;
     default:
       return sourceKind === "architecture" ? (
         <Layers className="w-3.5 h-3.5 text-emerald-400" />
@@ -66,8 +70,8 @@ function getIcon(type: string, sourceKind: string) {
 function getDomainColor(sourceKind: string, type: string) {
   if (type === "test") {
     return {
-      border: "border-purple-500/40 hover:border-purple-400",
-      badge: "bg-purple-500/10 text-purple-300 border-purple-500/20",
+      border: "border-sky-500/40 hover:border-sky-400",
+      badge: "bg-sky-500/10 text-sky-300 border-sky-500/20",
       glow: "hover:shadow-[0_0_15px_rgba(168,85,247,0.25)]",
     };
   }
@@ -103,22 +107,32 @@ export const CustomNode = memo(({ data }: CustomNodeProps) => {
     inDegree = 0,
     outDegree = 0,
     role,
+    cluster,
+    isUnconnected,
   } = data;
   const colors = getDomainColor(node.source_kind, node.node_type);
 
   const totalDegree = inDegree + outDegree;
-  const isHub = role === "hub" || totalDegree >= 6;
+  const isHub = role === "hub" || totalDegree >= 5;
   const isEntrypoint = role === "entrypoint" || (inDegree === 0 && outDegree > 0 && node.node_type === "api_endpoint");
 
   return (
     <div
-      className={`relative px-3.5 py-2.5 rounded-xl bg-[#101118]/95 backdrop-blur-md border transition-all duration-300 cursor-pointer min-w-[210px] max-w-[280px] shadow-lg ${
+      style={
+        cluster
+          ? {
+              borderTopColor: cluster.color.accent,
+              borderTopWidth: "2px",
+            }
+          : undefined
+      }
+      className={`relative px-3.5 py-2.5 rounded-xl bg-bg-secondary/95 backdrop-blur-md border transition-all duration-300 cursor-pointer min-w-[210px] max-w-[280px] shadow-lg ${
         colors.border
       } ${colors.glow} ${
         isDimmed
           ? "opacity-25 filter blur-[0.4px] scale-95"
           : isSelected
-          ? "ring-2 ring-indigo-400 border-indigo-400 shadow-[0_0_24px_rgba(99,102,241,0.55)] scale-[1.03] z-30"
+          ? "ring-2 ring-emerald-400 border-emerald-400 shadow-[0_0_24px_rgba(99,102,241,0.55)] scale-[1.03] z-30"
           : isHighlighted
           ? "ring-2 ring-cyan-400/80 border-cyan-400 shadow-[0_0_18px_rgba(6,182,212,0.4)] scale-[1.02] z-20"
           : "hover:scale-[1.01]"
@@ -141,7 +155,7 @@ export const CustomNode = memo(({ data }: CustomNodeProps) => {
       {/* Header: Icon, Name & Type */}
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <div className="flex items-center gap-1.5 truncate">
-          <div className="p-1 rounded-md bg-[#181926] border border-white/5">
+          <div className="p-1 rounded-md bg-bg-tertiary border border-white/5">
             {getIcon(node.node_type, node.source_kind)}
           </div>
           <span className="text-xs font-semibold text-text-primary truncate" title={node.name}>
@@ -158,6 +172,11 @@ export const CustomNode = memo(({ data }: CustomNodeProps) => {
           {isEntrypoint && (
             <span className="text-[8px] font-bold uppercase tracking-wider font-mono px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
               ENTRY
+            </span>
+          )}
+          {isUnconnected && (
+            <span className="text-[8px] font-semibold uppercase tracking-wider font-mono px-1 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+              STANDALONE
             </span>
           )}
           <span
@@ -197,7 +216,7 @@ export const CustomNode = memo(({ data }: CustomNodeProps) => {
             </span>
           )}
           {outDegree > 0 && (
-            <span className="flex items-center text-indigo-400" title={`${outDegree} outgoing dependencies/calls`}>
+            <span className="flex items-center text-emerald-400" title={`${outDegree} outgoing dependencies/calls`}>
               <ArrowUpRight className="w-2.5 h-2.5 mr-0.5" />
               {outDegree}
             </span>

@@ -1,5 +1,5 @@
 /**
- * Cortex Engineering — Authentication Store (Zustand)
+ * TrunkHQ — Authentication Store (Zustand)
  */
 
 import { create } from "zustand";

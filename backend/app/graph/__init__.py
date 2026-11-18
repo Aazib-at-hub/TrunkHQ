@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Relationship Graph Package.
+TrunkHQ — Relationship Graph Package.
 """
 
 from app.graph.engine import GraphExtractorEngine

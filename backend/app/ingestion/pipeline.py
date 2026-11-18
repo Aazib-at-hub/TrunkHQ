@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Ingestion Pipeline Orchestrator.
+TrunkHQ — Ingestion Pipeline Orchestrator.
 
 Coordinates cloning, file discovery, filtering, extraction, line-aware chunking,
 embedding generation, and database persistence with status reporting.
@@ -7,11 +7,11 @@ embedding generation, and database persistence with status reporting.
 
 from __future__ import annotations
 
-import shutil
 import traceback
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -20,7 +20,7 @@ from app.chunking.chunker import chunk_text
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.embeddings.base import BaseEmbeddingService
-from app.ingestion.cloner import clone_repository
+from app.ingestion.cloner import clone_repository, force_rm_directory, get_head_commit_sha
 from app.ingestion.discovery import discover_files
 from app.ingestion.extractor import extract_content
 from app.graph.engine import GraphExtractorEngine
@@ -75,7 +75,9 @@ class IngestionPipeline:
                 github_url=github_url,
                 target_dir=clone_dest,
                 branch=branch,
+                github_token=self._settings.github_token,
             )
+            commit_sha = await get_head_commit_sha(clone_dest) or branch
 
             # 2. File discovery & filtering
             async with self._session_factory() as session:
@@ -91,7 +93,9 @@ class IngestionPipeline:
             if not discovered:
                 logger.warning("No indexable files discovered", repo_id=str(repository_id))
                 async with self._session_factory() as session:
+                    file_dao = FileRepository(session)
                     repo_dao = RepositoryRepository(session)
+                    await file_dao.delete_by_repository(repository_id)
                     await repo_dao.update_status(
                         repository_id,
                         status="READY",
@@ -103,6 +107,11 @@ class IngestionPipeline:
                     await session.commit()
                 return
 
+            # Load existing files for incremental hashing
+            async with self._session_factory() as session:
+                existing_list = await FileRepository(session).list_by_repository(repository_id)
+                existing_by_path = {f.path: f for f in existing_list}
+
             # Compute language distribution
             lang_counts = Counter(d.language for d in discovered)
             total_files = len(discovered)
@@ -111,20 +120,31 @@ class IngestionPipeline:
                 for lang, count in lang_counts.most_common()
             }
 
-            # 3. Extract content and create chunks
-            all_file_records: list[RepositoryFile] = []
+            # 3. Extract content and create chunks only for new or modified files
             files_with_chunks: list[tuple[RepositoryFile, list[CodeChunk]]] = []
             all_chunks_to_embed: list[CodeChunk] = []
             graph_files_payload: list[tuple[str, str, Optional[str]]] = []
+            current_paths: set[str] = set()
+            ids_to_delete: list[UUID] = []
+            unchanged_count = 0
 
             for d in discovered:
                 extracted = extract_content(d.absolute_path)
                 if not extracted or not extracted.content.strip():
                     continue
 
+                current_paths.add(d.relative_path)
                 graph_files_payload.append(
                     (d.relative_path, extracted.content, extracted.content_hash)
                 )
+
+                existing_rec = existing_by_path.get(d.relative_path)
+                if existing_rec and existing_rec.content_hash == extracted.content_hash:
+                    unchanged_count += 1
+                    continue
+
+                if existing_rec:
+                    ids_to_delete.append(existing_rec.id)
 
                 file_rec = RepositoryFile(
                     repository_id=repository_id,
@@ -134,9 +154,7 @@ class IngestionPipeline:
                     size_bytes=d.size_bytes,
                     content_hash=extracted.content_hash,
                 )
-                all_file_records.append(file_rec)
 
-                # Chunk content
                 raw_chunks = chunk_text(
                     content=extracted.content,
                     chunk_size=self._settings.chunk_size,
@@ -158,47 +176,62 @@ class IngestionPipeline:
 
                 files_with_chunks.append((file_rec, chunk_records))
 
-            # 4. Generate embeddings in batches
-            batch_size = 64
-            chunk_contents = [c.content for c in all_chunks_to_embed]
-            logger.info(
-                "Generating embeddings for chunks",
-                chunk_count=len(all_chunks_to_embed),
-                batch_size=batch_size,
-            )
+            # Mark deleted files for removal
+            for path, old_rec in existing_by_path.items():
+                if path not in current_paths:
+                    ids_to_delete.append(old_rec.id)
 
-            all_embeddings: list[list[float]] = []
-            for i in range(0, len(chunk_contents), batch_size):
-                batch_slice = chunk_contents[i : i + batch_size]
-                batch_embeddings = await self._embedding_service.embed_texts(batch_slice)
-                all_embeddings.extend(batch_embeddings)
+            # 4. Generate embeddings in batches for new/modified chunks only
+            if all_chunks_to_embed:
+                batch_size = 64
+                chunk_contents = [c.content for c in all_chunks_to_embed]
+                logger.info(
+                    "Generating embeddings for new/modified chunks",
+                    chunk_count=len(all_chunks_to_embed),
+                    unchanged_files=unchanged_count,
+                    batch_size=batch_size,
+                )
 
-            # Assign embeddings to chunks
-            for chunk_obj, emb in zip(all_chunks_to_embed, all_embeddings):
-                chunk_obj.embedding = emb
+                all_embeddings: list[list[float]] = []
+                for i in range(0, len(chunk_contents), batch_size):
+                    batch_slice = chunk_contents[i : i + batch_size]
+                    batch_embeddings = await self._embedding_service.embed_texts(batch_slice)
+                    all_embeddings.extend(batch_embeddings)
 
-            # 5. Persist files and chunks in DB (purge obsolete data for re-indexing idempotency)
+                for chunk_obj, emb in zip(all_chunks_to_embed, all_embeddings):
+                    chunk_obj.embedding = emb
+
+            # 5. Persist incremental changes in DB
             async with self._session_factory() as session:
                 file_dao = FileRepository(session)
                 chunk_dao = ChunkRepository(session)
                 repo_dao = RepositoryRepository(session)
 
-                # Clear prior files and cascaded chunks to avoid duplicates
-                await file_dao.delete_by_repository(repository_id)
+                if ids_to_delete:
+                    await file_dao.delete_by_ids(ids_to_delete)
 
-                for file_rec, chunk_list in files_with_chunks:
-                    saved_file = await file_dao.create(file_rec)
-                    for c in chunk_list:
-                        c.file_id = saved_file.id
-                    if chunk_list:
-                        await chunk_dao.create_batch(chunk_list)
+                if files_with_chunks:
+                    new_file_recs = [f for f, _ in files_with_chunks]
+                    session.add_all(new_file_recs)
+                    await session.flush()
+
+                    chunks_to_insert: list[CodeChunk] = []
+                    for file_rec, chunk_list in files_with_chunks:
+                        for c in chunk_list:
+                            c.file_id = file_rec.id
+                            chunks_to_insert.append(c)
+                    if chunks_to_insert:
+                        await chunk_dao.create_batch(chunks_to_insert)
+
+                total_persisted_files = unchanged_count + len(files_with_chunks)
+                total_persisted_chunks = await chunk_dao.count_by_repository(repository_id)
 
                 # Transition status -> READY
                 await repo_dao.update_status(
                     repository_id,
                     status="READY",
-                    file_count=len(all_file_records),
-                    chunk_count=len(all_chunks_to_embed),
+                    file_count=total_persisted_files,
+                    chunk_count=total_persisted_chunks,
                     languages=languages_stat,
                     last_indexed_at=datetime.now(timezone.utc),
                 )
@@ -207,8 +240,9 @@ class IngestionPipeline:
             logger.info(
                 "Repository ingestion completed successfully",
                 repo_id=str(repository_id),
-                files=len(all_file_records),
-                chunks=len(all_chunks_to_embed),
+                files=total_persisted_files,
+                chunks=total_persisted_chunks,
+                unchanged_files=unchanged_count,
             )
 
             # 6. Sidecar: Relationship Graph Extraction (Isolated from Vector Failure)
@@ -219,7 +253,7 @@ class IngestionPipeline:
                     run_record = GraphIndexRun(
                         workspace_id=user_id,
                         repository_id=repository_id,
-                        commit_sha=branch,
+                        commit_sha=commit_sha,
                         status="RUNNING",
                     )
                     saved_run = await graph_dao.create_index_run(run_record)
@@ -231,9 +265,10 @@ class IngestionPipeline:
                         repository_id=repository_id,
                         workspace_id=user_id,
                         files=graph_files_payload,
+                        commit_sha=commit_sha,
                     )
 
-                    key_to_id = await graph_dao.upsert_nodes(
+                    key_to_id, nodes_created, nodes_updated = await graph_dao.upsert_nodes_with_stats(
                         workspace_id=user_id,
                         repository_id=repository_id,
                         nodes=nodes_payload,
@@ -251,7 +286,7 @@ class IngestionPipeline:
                             del e_copy["target_key"]
                             resolved_edges.append(e_copy)
 
-                    edges_count = await graph_dao.upsert_edges(
+                    edges_count, edges_created, edges_updated = await graph_dao.upsert_edges_with_stats(
                         workspace_id=user_id,
                         repository_id=repository_id,
                         edges=resolved_edges,
@@ -266,8 +301,10 @@ class IngestionPipeline:
                     await graph_dao.update_index_run(
                         run_id=run_record_id,
                         status="READY",
-                        nodes_created=len(nodes_payload),
-                        edges_created=edges_count,
+                        nodes_created=nodes_created,
+                        nodes_updated=nodes_updated,
+                        edges_created=edges_created,
+                        edges_updated=edges_updated,
                         nodes_deleted=del_nodes,
                         edges_deleted=del_edges,
                     )
@@ -320,4 +357,4 @@ class IngestionPipeline:
             # Clean up cloned local files
             if clone_dest and clone_dest.exists():
                 logger.info("Cleaning clone directory", path=str(clone_dest))
-                shutil.rmtree(clone_dest, ignore_errors=True)
+                force_rm_directory(clone_dest)

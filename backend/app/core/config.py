@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Application Configuration.
+TrunkHQ — Application Configuration.
 
 Centralizes all configuration via environment variables using pydantic-settings.
 Every configurable value flows through this module. No secrets are hard-coded.
@@ -61,8 +61,11 @@ class Settings(BaseSettings):
 
     # ── Application ──────────────────────────────────────────────────────────
     cors_origins: str = "http://localhost:3000"
+    admin_emails: str = ""
+    github_webhook_secret: Optional[str] = None
+    billing_webhook_secret: Optional[str] = None
     log_level: str = "INFO"
-    app_name: str = "Cortex Engineering"
+    app_name: str = "TrunkHQ"
     app_version: str = "0.1.0"
     debug: bool = False
 
@@ -70,6 +73,11 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """Parse comma-separated CORS origins into a list."""
         return [origin.strip() for origin in self.cors_origins.split(",")]
+
+    @property
+    def admin_emails_set(self) -> set[str]:
+        """Parse comma-separated admin email addresses into a lowercase set."""
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
 
     @property
     def is_jwt_secret_insecure(self) -> bool:

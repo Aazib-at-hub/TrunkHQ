@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Code Chunk Data Access.
+TrunkHQ — Code Chunk Data Access.
 
 Database operations for CodeChunk entity including vector retrieval queries.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import CodeChunk
@@ -49,6 +49,13 @@ class ChunkRepository:
             .order_by(CodeChunk.chunk_index.asc())
         )
         return result.scalars().all()
+
+    async def count_by_repository(self, repository_id: UUID) -> int:
+        """Return total number of persisted chunks for a repository."""
+        result = await self._session.execute(
+            select(func.count(CodeChunk.id)).where(CodeChunk.repository_id == repository_id)
+        )
+        return int(result.scalar_one() or 0)
 
     async def search_similar(
         self,

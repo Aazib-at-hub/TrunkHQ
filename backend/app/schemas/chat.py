@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Chat Schemas.
+TrunkHQ — Chat Schemas.
 
 Request and response schemas for chat messages, conversations,
 and source citations.

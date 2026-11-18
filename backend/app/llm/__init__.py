@@ -1,5 +1,5 @@
 """
-Cortex Engineering — LLM Service Factory.
+TrunkHQ — LLM Service Factory.
 """
 
 from functools import lru_cache

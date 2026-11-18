@@ -21,6 +21,9 @@ export function ImportRepoModal({
 }: ImportRepoModalProps) {
   const [githubUrl, setGithubUrl] = useState("");
   const [branch, setBranch] = useState("main");
+  const [description, setDescription] = useState("");
+  const [tagsInput, setTagsInput] = useState("");
+  const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -34,16 +37,27 @@ export function ImportRepoModal({
       return;
     }
 
+    const parsedTags = tagsInput
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+
     setLoading(true);
     try {
       const newRepo = await repoApi.importRepo({
         github_url: githubUrl.trim(),
         branch: branch.trim() || "main",
+        description: description.trim() || undefined,
+        tags: parsedTags.length > 0 ? parsedTags : undefined,
+        notes: notes.trim() || undefined,
       });
       onImportSuccess(newRepo);
       onClose();
       setGithubUrl("");
       setBranch("main");
+      setDescription("");
+      setTagsInput("");
+      setNotes("");
     } catch (err: unknown) {
       if (err instanceof Error) {
         setErrorMsg(err.message);
@@ -92,8 +106,37 @@ export function ImportRepoModal({
           onChange={(e) => setBranch(e.target.value)}
         />
 
+        <Input
+          label="Description (optional)"
+          type="text"
+          placeholder="Short summary of what this project does"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+
+        <Input
+          label="Tags (optional, comma-separated)"
+          type="text"
+          placeholder="backend, fastapi, rag"
+          value={tagsInput}
+          onChange={(e) => setTagsInput(e.target.value)}
+        />
+
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-text-secondary">
+            Project Notes (optional)
+          </label>
+          <textarea
+            rows={2}
+            placeholder="Architecture notes, setup steps, or key contacts..."
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            className="w-full rounded-lg border border-border-default bg-bg-primary px-3 py-2 text-xs text-text-primary placeholder:text-text-tertiary focus:border-emerald-500 focus:outline-none"
+          />
+        </div>
+
         <div className="rounded-lg border border-border-default bg-bg-primary/50 p-3 text-xs text-text-secondary flex items-start gap-2.5">
-          <GitFork className="h-4 w-4 text-indigo-400 mt-0.5 shrink-0" />
+          <GitFork className="h-4 w-4 text-emerald-400 mt-0.5 shrink-0" />
           <span>
             Cortex will clone the default branch, discover all code files, apply smart filtering
             rules (ignoring node_modules, .git, binaries), and index embeddings into pgvector.

@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Python AST Graph Extractor.
+TrunkHQ — Python AST Graph Extractor.
 
 Parses Python source files using Python's built-in ast module to extract
 classes, functions, methods, imports, inheritance, calls, and test relationships.
@@ -13,11 +13,46 @@ from typing import Any, Optional
 from uuid import UUID
 
 from app.core.logging import get_logger
-from app.graph.stable_key import make_file_key, make_symbol_key
+from app.graph.stable_key import make_file_key, make_symbol_key, normalize_path
 from app.graph.types import ExtractedEdge, ExtractedNode, ExtractionResult
 from app.models.graph import EdgeType, NodeType
 
 logger = get_logger("python_extractor")
+
+
+def _resolve_python_module(
+    current_file: str,
+    module_name: Optional[str],
+    level: int,
+    repo_paths: Optional[set[str]],
+) -> str:
+    """Resolve a Python module/import (including relative levels) to a repo-relative .py path."""
+    norm_current = normalize_path(current_file)
+    if level > 0:
+        parts = norm_current.split("/")[:-1]  # directory of current file
+        up = max(0, level - 1)
+        base_parts = parts[: len(parts) - up] if up <= len(parts) else []
+        mod_parts = [p for p in (module_name or "").split(".") if p]
+        rel_parts = base_parts + mod_parts
+        base_rel = "/".join(rel_parts)
+    else:
+        base_rel = (module_name or "").replace(".", "/")
+
+    if not base_rel:
+        return norm_current
+
+    candidates = [f"{base_rel}.py", f"{base_rel}/__init__.py"]
+    if repo_paths:
+        for cand in candidates:
+            if cand in repo_paths:
+                return cand
+        # Handle repos nested under a root prefix like backend/
+        for cand in candidates:
+            suffix = f"/{cand}"
+            for rp in repo_paths:
+                if rp.endswith(suffix):
+                    return rp
+    return candidates[0]
 
 
 class PythonGraphExtractor:
@@ -29,6 +64,7 @@ class PythonGraphExtractor:
         relative_path: str,
         content: str,
         content_hash: Optional[str] = None,
+        repo_paths: Optional[set[str]] = None,
     ) -> ExtractionResult:
         """Parse Python source and extract symbols and relationships."""
         result = ExtractionResult()
@@ -75,7 +111,10 @@ class PythonGraphExtractor:
         # Context tracking
         classes_in_file: dict[str, str] = {}  # class_name -> stable_key
         functions_in_file: dict[str, str] = {}  # func_name -> stable_key
-        imported_symbols: dict[str, str] = {}  # imported_name -> full_module_or_key
+        func_node_keys: dict[int, str] = {}  # id(ast.FunctionDef) -> stable_key
+        func_enclosing_class: dict[int, str] = {}  # id(ast.FunctionDef) -> class_name
+        # alias_name -> (target_file_path, imported_symbol_or_None)
+        import_aliases: dict[str, tuple[str, Optional[str]]] = {}
 
         # First pass: collect definitions and imports
         for stmt in tree.body:
@@ -83,16 +122,19 @@ class PythonGraphExtractor:
             if isinstance(stmt, ast.Import):
                 for alias in stmt.names:
                     target_name = alias.name
-                    asname = alias.asname or alias.name
-                    imported_symbols[asname] = target_name
+                    asname = alias.asname or alias.name.split(".")[0]
+                    target_file = _resolve_python_module(relative_path, target_name, 0, repo_paths)
+                    import_aliases[asname] = (target_file, None)
+                    if alias.asname:
+                        import_aliases[alias.asname] = (target_file, None)
                     # Edge from file to imported module
                     result.edges.append(
                         ExtractedEdge(
                             source_key=file_key,
-                            target_key=f"repo:{repository_id}:file:{target_name.replace('.', '/')}.py",
+                            target_key=make_file_key(repository_id, target_file),
                             edge_type=EdgeType.IMPORTS,
-                            properties={"imported_name": target_name, "alias": asname},
-                            confidence=0.8,
+                            properties={"imported_name": target_name, "alias": asname, "resolved_file": target_file},
+                            confidence=0.9 if (repo_paths and target_file in repo_paths) else 0.8,
                             evidence_kind="static",
                             source_uri=relative_path,
                             content_hash=content_hash,
@@ -102,17 +144,36 @@ class PythonGraphExtractor:
             # ImportFrom: from x import y
             elif isinstance(stmt, ast.ImportFrom):
                 mod = stmt.module or ""
+                level = getattr(stmt, "level", 0) or 0
+                base_target_file = _resolve_python_module(relative_path, mod, level, repo_paths)
                 for alias in stmt.names:
-                    full_name = f"{mod}.{alias.name}" if mod else alias.name
                     asname = alias.asname or alias.name
-                    imported_symbols[asname] = full_name
+                    target_file = base_target_file
+                    imported_sym: Optional[str] = alias.name if alias.name != "*" else None
+
+                    # Check if `from pkg import submod` refers to a module file in repo_paths
+                    if alias.name != "*" and repo_paths:
+                        submod = f"{mod}.{alias.name}" if mod else alias.name
+                        sub_cand = _resolve_python_module(relative_path, submod, level, repo_paths)
+                        if sub_cand in repo_paths:
+                            target_file = sub_cand
+                            imported_sym = None
+
+                    if alias.name != "*":
+                        import_aliases[asname] = (target_file, imported_sym)
+
                     result.edges.append(
                         ExtractedEdge(
                             source_key=file_key,
-                            target_key=f"repo:{repository_id}:file:{mod.replace('.', '/')}.py",
+                            target_key=make_file_key(repository_id, target_file),
                             edge_type=EdgeType.IMPORTS,
-                            properties={"imported_symbol": alias.name, "from_module": mod},
-                            confidence=0.8,
+                            properties={
+                                "imported_symbol": alias.name,
+                                "from_module": mod,
+                                "alias": asname,
+                                "resolved_file": target_file,
+                            },
+                            confidence=0.9 if (repo_paths and target_file in repo_paths) else 0.8,
                             evidence_kind="static",
                             source_uri=relative_path,
                             content_hash=content_hash,
@@ -165,10 +226,16 @@ class PythonGraphExtractor:
 
                     if base_name:
                         # Target could be local or imported
-                        target_base_key = classes_in_file.get(
-                            base_name,
-                            make_symbol_key(repository_id, relative_path, base_name, "class")
-                        )
+                        target_base_key = classes_in_file.get(base_name)
+                        if not target_base_key and base_name in import_aliases:
+                            imp_file, imp_sym = import_aliases[base_name]
+                            target_base_key = make_symbol_key(
+                                repository_id, imp_file, imp_sym or base_name, "class"
+                            )
+                        if not target_base_key:
+                            target_base_key = make_symbol_key(
+                                repository_id, relative_path, base_name, "class"
+                            )
                         result.edges.append(
                             ExtractedEdge(
                                 source_key=cls_key,
@@ -189,6 +256,9 @@ class PythonGraphExtractor:
                             repository_id, relative_path, method_qual, "method"
                         )
                         functions_in_file[item.name] = method_key
+                        functions_in_file[method_qual] = method_key
+                        func_node_keys[id(item)] = method_key
+                        func_enclosing_class[id(item)] = stmt.name
                         m_doc = ast.get_docstring(item) or ""
                         is_test = item.name.startswith("test_") or stmt.name.startswith("Test")
 
@@ -228,6 +298,7 @@ class PythonGraphExtractor:
             elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 func_key = make_symbol_key(repository_id, relative_path, stmt.name, "function")
                 functions_in_file[stmt.name] = func_key
+                func_node_keys[id(stmt)] = func_key
                 f_doc = ast.get_docstring(stmt) or ""
                 is_test = stmt.name.startswith("test_")
 
@@ -266,30 +337,71 @@ class PythonGraphExtractor:
         # Second pass: Extract CALLS and TESTS relationships
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                caller_key = functions_in_file.get(node.name)
+                caller_key = func_node_keys.get(id(node)) or functions_in_file.get(node.name)
                 if not caller_key:
                     continue
 
                 is_test_caller = node.name.startswith("test_")
+                enclosing_cls = func_enclosing_class.get(id(node))
 
                 for inner in ast.walk(node):
                     if isinstance(inner, ast.Call):
-                        callee_name = None
+                        callee_name: Optional[str] = None
+                        target_key: Optional[str] = None
+                        confidence = 0.6
+
                         if isinstance(inner.func, ast.Name):
                             callee_name = inner.func.id
+                            if callee_name in functions_in_file:
+                                target_key = functions_in_file[callee_name]
+                                confidence = 0.85
+                            elif callee_name in classes_in_file:
+                                target_key = classes_in_file[callee_name]
+                                confidence = 0.85
+                            elif callee_name in import_aliases:
+                                imp_file, imp_sym = import_aliases[callee_name]
+                                sym_name = imp_sym or callee_name
+                                target_key = make_symbol_key(
+                                    repository_id, imp_file, sym_name, "function"
+                                )
+                                confidence = 0.85
                         elif isinstance(inner.func, ast.Attribute):
                             callee_name = inner.func.attr
+                            if isinstance(inner.func.value, ast.Name):
+                                obj_name = inner.func.value.id
+                                if obj_name == "self" and enclosing_cls:
+                                    qual = f"{enclosing_cls}.{callee_name}"
+                                    if qual in functions_in_file:
+                                        target_key = functions_in_file[qual]
+                                        confidence = 0.9
+                                elif obj_name in import_aliases:
+                                    imp_file, imp_sym = import_aliases[obj_name]
+                                    if imp_sym is None:
+                                        # Module import: e.g., utils.helper()
+                                        target_key = make_symbol_key(
+                                            repository_id, imp_file, callee_name, "function"
+                                        )
+                                        confidence = 0.85
+                                    else:
+                                        # Class/object import: e.g., Service.method()
+                                        target_key = make_symbol_key(
+                                            repository_id, imp_file, f"{imp_sym}.{callee_name}", "method"
+                                        )
+                                        confidence = 0.8
 
                         if not callee_name or callee_name == node.name:
                             continue
 
-                        # If callee is known in file or imported
-                        target_key = functions_in_file.get(callee_name)
                         if not target_key:
-                            # Construct a speculative symbol key for call
-                            target_key = make_symbol_key(
-                                repository_id, relative_path, callee_name, "function"
-                            )
+                            target_key = functions_in_file.get(callee_name)
+                            if target_key:
+                                confidence = 0.85
+                            else:
+                                # Construct a speculative symbol key for call
+                                target_key = make_symbol_key(
+                                    repository_id, relative_path, callee_name, "function"
+                                )
+                                confidence = 0.5
 
                         edge_type = EdgeType.TESTS if is_test_caller else EdgeType.CALLS
 
@@ -298,8 +410,8 @@ class PythonGraphExtractor:
                                 source_key=caller_key,
                                 target_key=target_key,
                                 edge_type=edge_type,
-                                properties={"call_line": inner.lineno},
-                                confidence=0.85 if callee_name in functions_in_file else 0.6,
+                                properties={"call_line": inner.lineno, "callee": callee_name},
+                                confidence=confidence,
                                 evidence_kind="static",
                                 source_uri=relative_path,
                             )

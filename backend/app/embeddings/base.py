@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Embedding Service Base Interface.
+TrunkHQ — Embedding Service Base Interface.
 
 Defines the contract for embedding providers.
 """

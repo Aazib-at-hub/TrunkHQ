@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Message Data Access.
+TrunkHQ — Message Data Access.
 
 Database operations for Message and MessageSource entities.
 """

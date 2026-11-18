@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Authentication Schemas.
+TrunkHQ — Authentication Schemas.
 
 Request and response schemas for user registration, login, and profile.
 """
@@ -41,6 +41,9 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     username: str
+    is_admin: bool = False
+    account_type: str = "individual"
+    onboarding_completed: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Deterministic Stable Key Generation.
+TrunkHQ — Deterministic Stable Key Generation.
 
 Generates reproducible natural keys for graph entities to ensure
 idempotent re-indexing, updates, and cross-commit reconciliation.
@@ -52,3 +52,9 @@ def make_endpoint_key(repository_id: UUID, method: str, path: str) -> str:
 def make_document_key(repository_id: UUID, relative_path: str) -> str:
     """Generate stable natural key for an engineering document."""
     return f"repo:{repository_id}:document:{normalize_path(relative_path)}"
+
+
+def make_table_key(repository_id: UUID, table_name: str) -> str:
+    """Generate stable natural key for a database table or model."""
+    clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", table_name.lower().strip())
+    return f"repo:{repository_id}:table:{clean_name}"

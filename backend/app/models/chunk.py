@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Code Chunk Model.
+TrunkHQ — Code Chunk Model.
 
 Represents a chunk of code/text extracted from a repository file,
 along with its embedding vector for semantic similarity search.

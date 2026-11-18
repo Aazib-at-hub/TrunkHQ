@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Decision Service Base Interface.
+TrunkHQ — Decision Service Base Interface.
 
 Defines the contract for chunk filtering, reranking, and decision routing.
 """

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -16,6 +16,7 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { CustomNode, type CustomNodeData } from "./CustomNode";
+import { ClusterGroupNode } from "./ClusterGroupNode";
 import { GraphToolbar } from "./GraphToolbar";
 import { GraphNodeDetails } from "./GraphNodeDetails";
 import { ImpactPanel } from "./ImpactPanel";
@@ -25,7 +26,11 @@ import {
   computeConnectivity,
   computeOrganicForceLayout,
   computeHierarchicalLayout,
+  determineMacroCluster,
+  CLUSTER_CONFIGS,
   type LayoutMode,
+  type ClusterBounds,
+  type MacroClusterId,
 } from "../../lib/graph/layout";
 import type { GraphNode, GraphEdge, NodeDomain } from "../../types/graph";
 import { Loader2, AlertCircle, Network, Sparkles } from "lucide-react";
@@ -37,6 +42,7 @@ interface RelationshipGraphProps {
 
 const nodeTypes = {
   custom: CustomNode,
+  clusterGroup: ClusterGroupNode,
 };
 
 export function RelationshipGraph({
@@ -50,19 +56,95 @@ export function RelationshipGraph({
 
   const [rawNodes, setRawNodes] = useState<GraphNode[]>([]);
   const [rawEdges, setRawEdges] = useState<GraphEdge[]>([]);
+  const [totalRepoNodes, setTotalRepoNodes] = useState<number>(0);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [activeDomain, setActiveDomain] = useState<NodeDomain>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [serverSearchResults, setServerSearchResults] = useState<GraphNode[]>([]);
+  const [searchingNodes, setSearchingNodes] = useState(false);
+
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [impactRootNode, setImpactRootNode] = useState<GraphNode | null>(null);
   const [showInsights, setShowInsights] = useState(false);
 
-  // Layout & Focus states
+  // Trace Path mode state
+  const [tracePathMode, setTracePathMode] = useState(false);
+  const [pathSourceNode, setPathSourceNode] = useState<GraphNode | null>(null);
+  const [pathTargetNode, setPathTargetNode] = useState<GraphNode | null>(null);
+  const [pathNodeIds, setPathNodeIds] = useState<Set<string>>(new Set());
+  const [pathEdgeIds, setPathEdgeIds] = useState<Set<string>>(new Set());
+  const [pathStatusMsg, setPathStatusMsg] = useState<string | null>(null);
+  const [findingPath, setFindingPath] = useState(false);
+
+  // Blast radius canvas highlight state
+  const [impactNodeIds, setImpactNodeIds] = useState<Set<string>>(new Set());
+  const [impactEdgeIds, setImpactEdgeIds] = useState<Set<string>>(new Set());
+
+  // Layout, Cluster & Focus states
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("organic");
   const [focusNeighborhood, setFocusNeighborhood] = useState(false);
+  const [activeClusterFilter, setActiveClusterFilter] = useState<MacroClusterId | "all">("all");
+
+  const filteredRawNodes = useMemo(() => {
+    return rawNodes.filter((n) => {
+      if (activeDomain !== "all" && n.source_kind !== activeDomain) {
+        return false;
+      }
+      if (
+        activeClusterFilter !== "all" &&
+        determineMacroCluster(n) !== activeClusterFilter
+      ) {
+        return false;
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchesName = n.name.toLowerCase().includes(q);
+        const matchesQual = n.qualified_name?.toLowerCase().includes(q);
+        const matchesType = n.node_type.toLowerCase().includes(q);
+        const matchesDesc = n.description?.toLowerCase().includes(q);
+        if (!matchesName && !matchesQual && !matchesType && !matchesDesc) return false;
+      }
+      return true;
+    });
+  }, [rawNodes, activeDomain, activeClusterFilter, searchQuery]);
+
+  const filteredNodeCount = filteredRawNodes.length;
+
+  const filteredRawEdges = useMemo(() => {
+    const nodeIds = new Set(filteredRawNodes.map((n) => n.id));
+    return rawEdges.filter(
+      (e) => nodeIds.has(e.source_node_id) && nodeIds.has(e.target_node_id)
+    );
+  }, [filteredRawNodes, rawEdges]);
+
+  const layoutResult = useMemo(() => {
+    return layoutMode === "organic"
+      ? computeOrganicForceLayout(filteredRawNodes, filteredRawEdges)
+      : computeHierarchicalLayout(filteredRawNodes, filteredRawEdges);
+  }, [layoutMode, filteredRawNodes, filteredRawEdges]);
+
+  const clusters = layoutResult.clusters;
+
+  // Zoom to Cluster Island
+  const handleZoomToCluster = useCallback(
+    (cb: ClusterBounds) => {
+      if (rfInstance) {
+        rfInstance.fitBounds(
+          {
+            x: cb.x,
+            y: cb.y,
+            width: cb.width,
+            height: cb.height,
+          },
+          { padding: 0.18, duration: 650 }
+        );
+      }
+    },
+    [rfInstance]
+  );
 
   // Load Graph Data
   const loadGraph = useCallback(async () => {
@@ -70,6 +152,7 @@ export function RelationshipGraph({
       const data = await graphApi.getGraph(repositoryId, undefined, 450);
       setRawNodes(data.nodes);
       setRawEdges(data.edges);
+      setTotalRepoNodes(data.total_nodes);
       setError(null);
     } catch (err: unknown) {
       console.error("Failed to load graph:", err);
@@ -89,7 +172,7 @@ export function RelationshipGraph({
       await loadGraph();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Unknown error";
-      alert("Failed to build graph: " + msg);
+      setError("Failed to build graph: " + msg);
     } finally {
       setReindexing(false);
     }
@@ -103,6 +186,7 @@ export function RelationshipGraph({
         if (!isCancelled) {
           setRawNodes(data.nodes);
           setRawEdges(data.edges);
+          setTotalRepoNodes(data.total_nodes);
           setError(null);
           setLoading(false);
         }
@@ -120,30 +204,42 @@ export function RelationshipGraph({
     };
   }, [repositoryId]);
 
+  // Debounced server-side node search
+  useEffect(() => {
+    const q = searchQuery.trim();
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (q.length < 2) {
+        if (!cancelled) {
+          setServerSearchResults([]);
+          setSearchingNodes(false);
+        }
+        return;
+      }
+      if (!cancelled) setSearchingNodes(true);
+      graphApi
+        .searchNodes(repositoryId, q, undefined, 20)
+        .then((results) => {
+          if (!cancelled) setServerSearchResults(results);
+        })
+        .catch(() => {
+          if (!cancelled) setServerSearchResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearchingNodes(false);
+        });
+    }, q.length < 2 ? 0 : 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [repositoryId, searchQuery]);
+
   // Compute Layout, Degrees & Neighborhood Filtering
   useEffect(() => {
-    // 1. Filter by domain and search query
-    const filteredNodes = rawNodes.filter((n) => {
-      if (activeDomain !== "all" && n.source_kind !== activeDomain) {
-        return false;
-      }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchesName = n.name.toLowerCase().includes(q);
-        const matchesQual = n.qualified_name?.toLowerCase().includes(q);
-        const matchesType = n.node_type.toLowerCase().includes(q);
-        const matchesDesc = n.description?.toLowerCase().includes(q);
-        if (!matchesName && !matchesQual && !matchesType && !matchesDesc) return false;
-      }
-      return true;
-    });
-
-    const nodeIds = new Set(filteredNodes.map((n) => n.id));
-
-    // 2. Filter edges
-    const filteredEdges = rawEdges.filter(
-      (e) => nodeIds.has(e.source_node_id) && nodeIds.has(e.target_node_id)
-    );
+    const filteredNodes = filteredRawNodes;
+    const filteredEdges = filteredRawEdges;
 
     // 3. Pre-calculate connectivity metrics
     const { inDegree, outDegree, neighbors } = computeConnectivity(
@@ -172,11 +268,32 @@ export function RelationshipGraph({
       }
     }
 
-    // 5. Position nodes via physics or hierarchy
-    const positions =
-      layoutMode === "organic"
-        ? computeOrganicForceLayout(filteredNodes, filteredEdges)
-        : computeHierarchicalLayout(filteredNodes, filteredEdges);
+    // 5. Position nodes via physics or hierarchy + extract macro clusters
+    const { positions, clusters: layoutClusters, nodeClusterMap, unconnectedNodeIds } = layoutResult;
+
+    // 6. Generate Cluster Hull Background Nodes (Graphify / CodeGraph style)
+    const clusterGroupNodes: Node[] = layoutClusters.map((cb) => ({
+      id: `cluster-group-${cb.clusterId}`,
+      type: "clusterGroup",
+      position: { x: cb.x, y: cb.y },
+      data: {
+        cluster: cb.cluster,
+        nodeCount: cb.nodeCount,
+        connectedCount: cb.connectedCount,
+        unconnectedCount: cb.unconnectedCount,
+        unconnectedSection: cb.unconnectedSection,
+        width: cb.width,
+        height: cb.height,
+        onZoomCluster: () => handleZoomToCluster(cb),
+      },
+      selectable: false,
+      draggable: false,
+      style: {
+        width: cb.width,
+        height: cb.height,
+        zIndex: -1,
+      },
+    }));
 
     const layoutNodes: Node[] = filteredNodes.map((node) => {
       const pos = positions.get(node.id) || { x: 400, y: 300 };
@@ -185,21 +302,39 @@ export function RelationshipGraph({
       const totDeg = inDeg + outDeg;
 
       let role = "standard";
-      if (totDeg >= 6) role = "hub";
+      if (totDeg >= 5) role = "hub";
       else if (inDeg === 0 && outDeg > 0) role = "entrypoint";
 
       const isSelected = selectedNode?.id === node.id;
       const isNeighbor = selectedNode ? connectedNodeIds.has(node.id) : false;
-      const isDimmed = Boolean(focusNeighborhood && selectedNode && !isNeighbor);
+      const isPathNode = pathNodeIds.has(node.id);
+      const isImpactNode = impactNodeIds.has(node.id);
+      const hasPathHighlight = pathNodeIds.size > 0;
+      const hasImpactHighlight = !hasPathHighlight && impactNodeIds.size > 0;
+
+      const isDimmed = hasPathHighlight
+        ? !isPathNode
+        : hasImpactHighlight
+        ? !isImpactNode
+        : Boolean(focusNeighborhood && selectedNode && !isNeighbor);
+
+      const clusterId = nodeClusterMap.get(node.id) || "backend";
+      const clusterMeta = CLUSTER_CONFIGS[clusterId];
+      const isUnconnected = unconnectedNodeIds.has(node.id);
 
       const nodeData: CustomNodeData = {
         node,
-        isSelected,
-        isHighlighted: isNeighbor && !isSelected,
+        isSelected: isSelected || pathSourceNode?.id === node.id || pathTargetNode?.id === node.id,
+        isHighlighted:
+          isPathNode ||
+          isImpactNode ||
+          (isNeighbor && !isSelected),
         isDimmed,
         inDegree: inDeg,
         outDegree: outDeg,
         role,
+        cluster: clusterMeta,
+        isUnconnected,
       };
 
       return {
@@ -210,11 +345,19 @@ export function RelationshipGraph({
       };
     });
 
-    // 6. Formatted Edges with 4-way handle routing
+    // 7. Formatted Edges with 4-way handle routing
     const posMap = positions;
     const layoutEdges: Edge[] = filteredEdges.map((e) => {
       const isIncident = connectedEdgeIds.has(e.id);
-      const isDimmed = Boolean(focusNeighborhood && selectedNode && !isIncident);
+      const isPathEdge = pathEdgeIds.has(e.id);
+      const isImpactEdge = impactEdgeIds.has(e.id);
+      const hasPathHighlight = pathNodeIds.size > 0;
+      const hasImpactHighlight = !hasPathHighlight && impactNodeIds.size > 0;
+      const isDimmed = hasPathHighlight
+        ? !isPathEdge
+        : hasImpactHighlight
+        ? !isImpactEdge
+        : Boolean(focusNeighborhood && selectedNode && !isIncident);
 
       let strokeColor = "#64748b";
       let animated = false;
@@ -228,7 +371,13 @@ export function RelationshipGraph({
         animated = true;
       } else if (e.edge_type === "DOCUMENTS") strokeColor = "#f59e0b";
 
-      if (isIncident) {
+      if (isPathEdge) {
+        strokeColor = "#22d3ee";
+        animated = true;
+      } else if (isImpactEdge) {
+        strokeColor = "#f97316";
+        animated = true;
+      } else if (isIncident) {
         strokeColor = "#38bdf8";
         animated = true;
       }
@@ -269,7 +418,7 @@ export function RelationshipGraph({
         sourceHandle,
         targetHandle,
         animated,
-        label: isIncident ? e.edge_type : undefined,
+        label: isPathEdge || isImpactEdge || isIncident ? e.edge_type : undefined,
         labelStyle: {
           fill: "#93c5fd",
           fontSize: 9,
@@ -281,46 +430,159 @@ export function RelationshipGraph({
         labelBgBorderRadius: 4,
         style: {
           stroke: isDimmed ? "#1e293b" : strokeColor,
-          strokeWidth: isIncident ? 2.5 : 1.4,
+          strokeWidth: isPathEdge ? 3 : isImpactEdge || isIncident ? 2.5 : 1.4,
           opacity: isDimmed ? 0.15 : 1,
         },
         markerEnd: {
           type: MarkerType.ArrowClosed,
           color: isDimmed ? "#1e293b" : strokeColor,
-          width: isIncident ? 16 : 12,
-          height: isIncident ? 16 : 12,
+          width: isPathEdge || isImpactEdge || isIncident ? 16 : 12,
+          height: isPathEdge || isImpactEdge || isIncident ? 16 : 12,
         },
       };
     });
 
-    setNodes(layoutNodes);
+    setNodes([...clusterGroupNodes, ...layoutNodes]);
     setEdges(layoutEdges);
   }, [
-    rawNodes,
-    rawEdges,
-    activeDomain,
-    searchQuery,
+    filteredRawNodes,
+    filteredRawEdges,
+    layoutResult,
     selectedNode,
-    layoutMode,
     focusNeighborhood,
+    pathNodeIds,
+    pathEdgeIds,
+    pathSourceNode,
+    pathTargetNode,
+    impactNodeIds,
+    impactEdgeIds,
+    handleZoomToCluster,
     setNodes,
     setEdges,
   ]);
+
+  const handleClearPath = useCallback(() => {
+    setPathSourceNode(null);
+    setPathTargetNode(null);
+    setPathNodeIds(new Set());
+    setPathEdgeIds(new Set());
+    setPathStatusMsg(null);
+  }, []);
+
+  const handleToggleTracePathMode = useCallback(() => {
+    setTracePathMode((prev) => {
+      if (prev) {
+        handleClearPath();
+      }
+      return !prev;
+    });
+  }, [handleClearPath]);
+
+  const handleImpactComputed = useCallback(
+    (
+      nodeIds: Set<string>,
+      edgeIds: Set<string>,
+      impactedNodes: GraphNode[],
+      impactedEdges: GraphEdge[]
+    ) => {
+      setImpactNodeIds(nodeIds);
+      setImpactEdgeIds(edgeIds);
+      if (impactedNodes.length > 0) {
+        setRawNodes((prev) => {
+          const seen = new Set(prev.map((n) => n.id));
+          const additions = impactedNodes.filter((n) => !seen.has(n.id));
+          return additions.length > 0 ? [...prev, ...additions] : prev;
+        });
+      }
+      if (impactedEdges.length > 0) {
+        setRawEdges((prev) => {
+          const seen = new Set(prev.map((e) => e.id));
+          const additions = impactedEdges.filter((e) => !seen.has(e.id));
+          return additions.length > 0 ? [...prev, ...additions] : prev;
+        });
+      }
+    },
+    []
+  );
 
   // Click handler
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, flowNode: Node) => {
       const found = rawNodes.find((n) => n.id === flowNode.id);
-      if (found) {
-        setSelectedNode(found);
+      if (!found) return;
+
+      if (tracePathMode) {
+        if (!pathSourceNode || pathTargetNode) {
+          setPathSourceNode(found);
+          setPathTargetNode(null);
+          setPathNodeIds(new Set([found.id]));
+          setPathEdgeIds(new Set());
+          setPathStatusMsg("Select target node...");
+        } else if (found.id !== pathSourceNode.id) {
+          setPathTargetNode(found);
+          setFindingPath(true);
+          setPathStatusMsg(null);
+          graphApi
+            .findPath(repositoryId, pathSourceNode.id, found.id, 6)
+            .then((res) => {
+              if (res.found) {
+                const nIds = new Set<string>();
+                const eIds = new Set<string>();
+                const newNodes: GraphNode[] = [];
+                const newEdges: GraphEdge[] = [];
+                for (const step of res.steps) {
+                  if (step.node) {
+                    nIds.add(step.node.id);
+                    newNodes.push(step.node);
+                  }
+                  if (step.edge) {
+                    eIds.add(step.edge.id);
+                    newEdges.push(step.edge);
+                  }
+                }
+                if (newNodes.length > 0) {
+                  setRawNodes((prev) => {
+                    const seen = new Set(prev.map((n) => n.id));
+                    const add = newNodes.filter((n) => !seen.has(n.id));
+                    return add.length > 0 ? [...prev, ...add] : prev;
+                  });
+                }
+                if (newEdges.length > 0) {
+                  setRawEdges((prev) => {
+                    const seen = new Set(prev.map((e) => e.id));
+                    const add = newEdges.filter((e) => !seen.has(e.id));
+                    return add.length > 0 ? [...prev, ...add] : prev;
+                  });
+                }
+                setPathNodeIds(nIds);
+                setPathEdgeIds(eIds);
+                setPathStatusMsg(`Path found (${res.length} hops)`);
+              } else {
+                setPathNodeIds(new Set([pathSourceNode.id, found.id]));
+                setPathEdgeIds(new Set());
+                setPathStatusMsg("No path found within 6 hops");
+              }
+            })
+            .catch((err: unknown) => {
+              setPathStatusMsg(err instanceof Error ? err.message : "Failed to trace path");
+            })
+            .finally(() => setFindingPath(false));
+        }
+        return;
       }
+
+      setSelectedNode(found);
     },
-    [rawNodes]
+    [rawNodes, tracePathMode, pathSourceNode, pathTargetNode, repositoryId]
   );
 
   // Focus & Center helper
   const handleSelectAndCenterNode = useCallback(
     (targetNode: GraphNode) => {
+      setRawNodes((prev) => {
+        if (prev.some((n) => n.id === targetNode.id)) return prev;
+        return [...prev, targetNode];
+      });
       setSelectedNode(targetNode);
       if (rfInstance) {
         const found = nodes.find((n) => n.id === targetNode.id);
@@ -336,7 +598,7 @@ export function RelationshipGraph({
   );
 
   return (
-    <div className="relative w-full h-[calc(100vh-64px)] flex overflow-hidden bg-[#0a0b0e]">
+    <div className="relative w-full h-full flex overflow-hidden bg-bg-primary">
       {/* Main Canvas Area */}
       <div className="flex-1 flex flex-col relative h-full">
         {/* Top Controls Toolbar */}
@@ -346,8 +608,13 @@ export function RelationshipGraph({
             onDomainChange={setActiveDomain}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
-            nodeCount={nodes.length}
+            serverSearchResults={serverSearchResults}
+            searchingNodes={searchingNodes}
+            onSelectSearchResult={handleSelectAndCenterNode}
+            nodeCount={filteredNodeCount}
             edgeCount={edges.length}
+            loadedNodeCount={rawNodes.length}
+            totalRepoNodes={totalRepoNodes}
             onFitView={() => rfInstance?.fitView({ duration: 500 })}
             onRefresh={loadGraph}
             isLoading={loading}
@@ -357,6 +624,27 @@ export function RelationshipGraph({
             focusNeighborhood={focusNeighborhood}
             onToggleFocusNeighborhood={() => setFocusNeighborhood((prev) => !prev)}
             hasSelectedNode={Boolean(selectedNode)}
+            tracePathMode={tracePathMode}
+            onToggleTracePathMode={handleToggleTracePathMode}
+            pathSourceNode={pathSourceNode}
+            pathTargetNode={pathTargetNode}
+            pathStatusMsg={pathStatusMsg}
+            findingPath={findingPath}
+            onClearPath={handleClearPath}
+            impactHighlightCount={impactNodeIds.size}
+            onClearImpactHighlight={() => {
+              setImpactNodeIds(new Set());
+              setImpactEdgeIds(new Set());
+            }}
+            clusters={clusters}
+            activeClusterFilter={activeClusterFilter}
+            onSelectClusterFilter={(cid) => {
+              setActiveClusterFilter(cid);
+              if (cid !== "all") {
+                const target = clusters.find((c) => c.clusterId === cid);
+                if (target) handleZoomToCluster(target);
+              }
+            }}
           />
         </div>
 
@@ -384,7 +672,7 @@ export function RelationshipGraph({
           <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center text-text-tertiary">
             {rawNodes.length === 0 ? (
               <>
-                <div className="p-3.5 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 mb-1 shadow-inner">
+                <div className="p-3.5 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 mb-1 shadow-inner">
                   <Network className="w-8 h-8" />
                 </div>
                 <h3 className="text-base font-semibold text-text-primary">
@@ -396,7 +684,7 @@ export function RelationshipGraph({
                 <button
                   onClick={handleReindexGraph}
                   disabled={reindexing}
-                  className="mt-2 flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-lg shadow-indigo-500/20 transition-all disabled:opacity-50 cursor-pointer"
+                  className="mt-2 flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <Sparkles className={`w-4 h-4 ${reindexing ? "animate-spin" : ""}`} />
                   <span>
@@ -437,8 +725,8 @@ export function RelationshipGraph({
               minZoom={0.15}
               maxZoom={2.2}
             >
-              <Background color="#161722" gap={24} size={1} />
-              <Controls className="!bg-[#101118] !border-border-default !rounded-xl overflow-hidden [&>button]:!bg-[#101118] [&>button]:!border-b [&>button]:!border-border-default [&>button]:!text-text-primary hover:[&>button]:!bg-white/5" />
+              <Background color="var(--border-subtle)" gap={24} size={1} />
+              <Controls className="!bg-bg-secondary !border-border-default !rounded-xl overflow-hidden [&>button]:!bg-bg-secondary [&>button]:!border-b [&>button]:!border-border-default [&>button]:!text-text-primary hover:[&>button]:!bg-bg-tertiary" />
               <MiniMap
                 nodeColor={(n: Node) => {
                   const nodeData = n.data as unknown as CustomNodeData;
@@ -447,7 +735,7 @@ export function RelationshipGraph({
                   if (kind === "knowledge") return "#f59e0b";
                   return "#38bdf8";
                 }}
-                className="!bg-[#101118]/90 !border-border-default !rounded-xl overflow-hidden !shadow-2xl"
+                className="!bg-bg-secondary/90 !border-border-default !rounded-xl overflow-hidden !shadow-2xl"
               />
             </ReactFlow>
           </div>
@@ -476,6 +764,8 @@ export function RelationshipGraph({
           repoId={repositoryId}
           onClose={() => setImpactRootNode(null)}
           onAskAboutImpact={(question) => onAskCortex?.(question)}
+          onSelectNode={handleSelectAndCenterNode}
+          onImpactComputed={handleImpactComputed}
         />
       )}
 

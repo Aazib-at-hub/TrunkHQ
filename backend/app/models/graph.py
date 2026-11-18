@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Unified Relationship Graph Models.
+TrunkHQ — Unified Relationship Graph Models.
 
 Defines GraphNode, GraphEdge, and GraphIndexRun entities for representing
 code entities, architectural components, engineering knowledge, and their relationships.
@@ -33,6 +33,7 @@ class NodeType:
     """Standard controlled vocabulary for graph nodes."""
 
     # Code domain
+    PROJECT = "project"
     REPOSITORY = "repository"
     DIRECTORY = "directory"
     FILE = "file"
@@ -88,6 +89,7 @@ class EdgeType:
     # Knowledge & Traceability
     IMPLEMENTS_REQUIREMENT = "IMPLEMENTS_REQUIREMENT"
     DOCUMENTS = "DOCUMENTS"
+    BELONGS_TO = "BELONGS_TO"
     INTRODUCED_BY = "INTRODUCED_BY"
     TRACKED_BY = "TRACKED_BY"
     SUPERSEDES = "SUPERSEDES"

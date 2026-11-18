@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Conversation Model.
+TrunkHQ — Conversation Model.
 
 Represents a chat conversation scoped to a specific repository.
 A conversation belongs to a user and a repository, ensuring
@@ -23,11 +23,17 @@ class Conversation(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "conversations"
 
-    # Ownership
+    # Ownership & Tenancy
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     repository_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

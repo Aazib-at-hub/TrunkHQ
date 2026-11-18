@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Structured Logging.
+TrunkHQ — Structured Logging.
 
 Configures structlog for JSON-formatted, structured logging with useful
 context (timestamp, log level, logger name). Sensitive data is never logged.

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 interface ModalProps {
@@ -34,7 +35,7 @@ export function Modal({
     };
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
+  if (!isOpen || typeof document === "undefined") return null;
 
   const maxWidthClass = {
     sm: "max-w-sm",
@@ -44,11 +45,11 @@ export function Modal({
     "2xl": "max-w-2xl",
   }[maxWidth];
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 overflow-y-auto">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/70 backdrop-blur-sm transition-opacity animate-in fade-in duration-200"
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm transition-opacity"
         onClick={onClose}
       />
 
@@ -57,8 +58,10 @@ export function Modal({
         className={`relative w-full ${maxWidthClass} rounded-2xl border border-border-default bg-bg-secondary p-6 shadow-2xl transition-all duration-200 z-10`}
       >
         <button
+          type="button"
           onClick={onClose}
-          className="absolute right-4 top-4 rounded-lg p-1 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary transition-colors"
+          aria-label="Close modal"
+          className="absolute right-4 top-4 cursor-pointer rounded-lg p-1 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary transition-colors"
         >
           <X className="h-5 w-5" />
         </button>
@@ -76,6 +79,7 @@ export function Modal({
 
         <div>{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

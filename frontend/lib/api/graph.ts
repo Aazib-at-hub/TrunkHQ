@@ -1,5 +1,5 @@
 /**
- * Cortex Engineering — Graph API Client
+ * TrunkHQ — Graph API Client
  */
 
 import { get, post } from "./client";

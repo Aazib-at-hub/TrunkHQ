@@ -1,22 +1,29 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Cpu, GitFork, LogIn, LogOut, RefreshCw } from "lucide-react";
+import Link from "next/link";
+import { Activity, LogIn, LogOut, Moon, Sun } from "lucide-react";
 import { useAuthStore } from "../lib/store/auth";
+import { useThemeStore } from "../lib/store/theme";
 import { healthApi } from "../lib/api/client";
 import type { HealthResponse } from "../lib/api/types";
 
 interface NavbarProps {
-  onOpenAuth: () => void;
-  onOpenImport: () => void;
+  onOpenAuth: (mode?: "login" | "register") => void;
+  onOpenImport?: () => void;
 }
 
-export function Navbar({ onOpenAuth, onOpenImport }: NavbarProps) {
+export function Navbar({ onOpenAuth }: NavbarProps) {
   const { user, logout, initialize } = useAuthStore();
-  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const { theme, initTheme, toggleTheme } = useThemeStore();
+  const [rawHealth, setHealth] = useState<HealthResponse | null>(null);
   const [isHealthLoading, setIsHealthLoading] = useState(false);
 
+  const isAdmin = Boolean(user?.is_admin);
+  const health = isAdmin ? rawHealth : null;
+
   const checkHealth = async () => {
+    if (!isAdmin) return;
     setIsHealthLoading(true);
     try {
       const data = await healthApi.checkHealth();
@@ -29,8 +36,15 @@ export function Navbar({ onOpenAuth, onOpenImport }: NavbarProps) {
   };
 
   useEffect(() => {
-    let ignore = false;
     initialize();
+    initTheme();
+  }, [initialize, initTheme]);
+
+  useEffect(() => {
+    let ignore = false;
+    if (!isAdmin) {
+      return;
+    }
     healthApi
       .checkHealth()
       .then((data) => {
@@ -43,67 +57,86 @@ export function Navbar({ onOpenAuth, onOpenImport }: NavbarProps) {
     return () => {
       ignore = true;
     };
-  }, [initialize]);
+  }, [isAdmin]);
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-border-default bg-bg-secondary/80 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         {/* Brand */}
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 via-indigo-600 to-purple-600 shadow-md shadow-indigo-500/20">
-            <Cpu className="h-5 w-5 text-white" />
+        <Link href="/" className="flex items-center gap-3 hover:opacity-90 transition-opacity">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border-default bg-white p-1.5 shadow-xs">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/trunkhq-icon.png" alt="TrunkHQ" className="h-full w-full object-contain" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <span className="text-lg font-bold tracking-tight text-text-primary">
-                Cortex
-              </span>
-              <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-indigo-400 border border-indigo-500/20">
-                Engineering
+                Trunk<span className="text-emerald-400">HQ</span>
               </span>
             </div>
-            <p className="text-xs text-text-tertiary">Repository Intelligence Platform</p>
+            <p className="text-xs text-text-tertiary">Engineering Intelligence</p>
           </div>
-        </div>
+        </Link>
 
         {/* Status & Actions */}
         <div className="flex items-center gap-3">
-          {/* Health Indicator */}
-          <div
-            onClick={checkHealth}
-            title={health ? `Backend: ${health.status} (${health.database})` : "Backend offline"}
-            className="flex cursor-pointer items-center gap-2 rounded-full border border-border-default bg-bg-tertiary px-3 py-1.5 text-xs text-text-secondary transition hover:border-text-tertiary"
+          <Link
+            href="/pricing"
+            className="rounded-full border border-border-default bg-bg-tertiary px-3 py-1.5 text-xs font-medium text-text-secondary transition hover:border-text-tertiary hover:text-text-primary"
           >
-            <span
-              className={`h-2 w-2 rounded-full ${
-                health?.status === "healthy"
-                  ? "bg-emerald-400"
-                  : health?.status === "degraded"
-                  ? "bg-amber-400 animate-pulse"
-                  : "bg-red-400"
-              }`}
-            />
-            <span className="hidden sm:inline font-mono">
-              {health?.status === "healthy"
-                ? "System Online"
-                : health?.status === "degraded"
-                ? `DB ${health.database}`
-                : "Offline"}
-            </span>
-            <RefreshCw
-              className={`h-3 w-3 text-text-tertiary ${isHealthLoading ? "animate-spin" : ""}`}
-            />
-          </div>
+            Pricing
+          </Link>
 
-          {/* Import Repo Button */}
-          {user && (
-            <button
-              onClick={onOpenImport}
-              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 transition active:scale-95"
-            >
-              <GitFork className="h-3.5 w-3.5" />
-              <span>Import Repo</span>
-            </button>
+          {/* Day / Night Mode Toggle */}
+          <button
+            type="button"
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to Day Mode" : "Switch to Night Mode"}
+            aria-label={theme === "dark" ? "Switch to Day Mode" : "Switch to Night Mode"}
+            className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border-default bg-bg-tertiary px-2.5 py-1.5 text-xs font-medium text-text-secondary transition hover:border-text-tertiary hover:text-text-primary"
+          >
+            {theme === "dark" ? (
+              <Sun className="h-3.5 w-3.5 text-amber-400" />
+            ) : (
+              <Moon className="h-3.5 w-3.5 text-emerald-500" />
+            )}
+            <span className="hidden sm:inline">{theme === "dark" ? "Day" : "Night"}</span>
+          </button>
+
+          {isAdmin && (
+            <>
+              <Link
+                href="/system"
+                title="System Intelligence & Indexing Diagnostics"
+                className="flex items-center gap-1.5 rounded-full border border-border-default bg-bg-tertiary px-2.5 py-1.5 text-xs font-medium text-text-secondary transition hover:border-text-tertiary hover:text-text-primary"
+              >
+                <Activity className="h-3.5 w-3.5 text-emerald-400" />
+                <span className="hidden sm:inline">System</span>
+              </Link>
+
+              {/* Subtle Health Dot (admin-only) */}
+              <button
+                type="button"
+                onClick={checkHealth}
+                title={health ? `Backend: ${health.status} (${health.database})` : "Backend offline — click to recheck"}
+                className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border-default bg-bg-tertiary px-2.5 py-1.5 text-xs text-text-secondary transition hover:border-text-tertiary"
+              >
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    health?.status === "healthy"
+                      ? "bg-emerald-400"
+                      : health?.status === "degraded"
+                      ? "bg-amber-400 animate-pulse"
+                      : "bg-red-400"
+                  }`}
+                />
+                {health?.status !== "healthy" && (
+                  <span className="hidden sm:inline font-mono">
+                    {health?.status === "degraded" ? `DB ${health.database}` : isHealthLoading ? "Checking..." : "Offline"}
+                  </span>
+                )}
+              </button>
+            </>
           )}
 
           {/* Auth Button */}
@@ -127,13 +160,13 @@ export function Navbar({ onOpenAuth, onOpenImport }: NavbarProps) {
               </button>
             </div>
           ) : (
-            <button
-              onClick={onOpenAuth}
-              className="flex items-center gap-2 rounded-lg border border-border-default bg-bg-tertiary px-3.5 py-1.5 text-xs font-medium text-text-primary hover:bg-bg-elevated transition"
+            <Link
+              href="/auth?mode=login"
+              className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 transition"
             >
-              <LogIn className="h-3.5 w-3.5 text-indigo-400" />
-              <span>Sign In</span>
-            </button>
+              <LogIn className="h-3.5 w-3.5" />
+              <span>Sign In / Up</span>
+            </Link>
           )}
         </div>
       </div>

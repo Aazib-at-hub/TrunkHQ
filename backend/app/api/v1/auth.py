@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Authentication API Routes.
+TrunkHQ — Authentication API Routes.
 
 Thin controller layer that delegates to AuthService.
 Handles request parsing, response formatting, and HTTP status codes.
@@ -19,6 +19,7 @@ from app.schemas.auth import (
     UserResponse,
 )
 from app.schemas.common import MessageResponse
+from app.schemas.organization import OnboardingRequest
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -81,3 +82,22 @@ async def get_me(
     """Get the authenticated user's profile."""
     service = AuthService(db)
     return await service.get_profile(user_id)
+
+
+@router.patch(
+    "/onboarding",
+    response_model=UserResponse,
+    summary="Complete guided user onboarding",
+)
+async def complete_onboarding(
+    request: OnboardingRequest,
+    user_id=Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """Save customer segment account type and initial workspace name."""
+    service = AuthService(db)
+    return await service.complete_onboarding(
+        user_id=user_id,
+        account_type=request.account_type,
+        workspace_name=request.workspace_name,
+    )

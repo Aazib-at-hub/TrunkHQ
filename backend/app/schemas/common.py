@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Common Response Schemas.
+TrunkHQ — Common Response Schemas.
 
 Shared response structures used across multiple API endpoints.
 """

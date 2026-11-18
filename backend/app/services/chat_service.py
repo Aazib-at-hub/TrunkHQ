@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Chat & Question Answering Service.
+TrunkHQ — Chat & Question Answering Service.
 
 Orchestrates multi-turn RAG chat sessions scoped to repositories,
 grounded generation, citation tracking, and message persistence.
@@ -7,6 +7,7 @@ grounded generation, citation tracking, and message persistence.
 
 from __future__ import annotations
 
+import re
 from typing import Optional, Sequence
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from app.decision import get_decision_service
 from app.embeddings import get_embedding_service
 from app.llm import get_llm_service
 from app.models.conversation import Conversation
+from app.models.document import Document, DocumentChunk
 from app.models.message import Message, MessageSource
 from app.rag.generator import RAGGenerator
 from app.repositories.conversation_repo import ConversationRepository
@@ -28,6 +30,69 @@ from app.repositories.repository_repo import RepositoryRepository
 from app.retrieval.retriever import RetrieverService
 
 logger = get_logger("chat_service")
+
+_STOPWORDS = {
+    "what", "where", "when", "which", "whose", "whom", "how", "does", "did",
+    "doing", "done", "have", "has", "had", "will", "would", "could", "should",
+    "can", "may", "might", "must", "need", "want", "tell", "show", "explain",
+    "describe", "find", "list", "give", "make", "work", "works", "working",
+    "used", "using", "uses", "this", "that", "these", "those", "with", "from",
+    "into", "about", "there", "their", "them", "they", "then", "than", "some",
+    "code", "file", "files", "function", "functions", "class", "classes",
+    "method", "methods", "module", "modules", "repo", "repository", "project",
+}
+
+
+def extract_query_entities(question: str, max_entities: int = 5) -> list[str]:
+    """
+    Extract likely code symbols, file paths, and technical identifiers from a user question.
+
+    Prioritizes backticked identifiers, file paths, CamelCase, snake_case, and dotted
+    references before falling back to non-stopword technical tokens.
+    """
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(token: str) -> None:
+        cleaned = token.strip("`\"'?,.:;()[]{}<>")
+        if len(cleaned) < 2:
+            return
+        lowered = cleaned.lower()
+        if lowered in _STOPWORDS or lowered in seen:
+            return
+        seen.add(lowered)
+        candidates.append(cleaned)
+
+    # 1. Backticked code spans
+    for m in re.finditer(r"`([^`]+)`", question):
+        for part in m.group(1).split():
+            _add(part)
+
+    # 2. File paths (e.g. app/services/chat_service.py)
+    for m in re.finditer(r"\b(?:[a-zA-Z0-9_.-]+/)+[a-zA-Z0-9_.-]+\b", question):
+        _add(m.group(0))
+
+    # 3. Dotted qualified names (e.g. GraphRepository.search_nodes)
+    for m in re.finditer(r"\b[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)+\b", question):
+        full = m.group(0)
+        _add(full)
+        _add(full.rsplit(".", 1)[-1])
+
+    # 4. snake_case identifiers
+    for m in re.finditer(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", question):
+        _add(m.group(0))
+
+    # 5. CamelCase / PascalCase identifiers
+    for m in re.finditer(r"\b(?:[A-Z][a-z0-9]+){2,}\b|\b[a-z]+[A-Z][a-zA-Z0-9]*\b", question):
+        _add(m.group(0))
+
+    # 6. Fallback to remaining non-stopword tokens (length >= 3)
+    for raw in question.split():
+        tok = raw.strip("`\"'?,.:;()[]{}<>")
+        if len(tok) >= 3 and tok.lower() not in _STOPWORDS:
+            _add(tok)
+
+    return candidates[:max_entities]
 
 
 class ChatService:
@@ -48,6 +113,7 @@ class ChatService:
         question: str,
         conversation_id: Optional[UUID] = None,
         context_mode: str = "rag",
+        organization_id: Optional[UUID] = None,
     ) -> tuple[Conversation, Message, list[MessageSource]]:
         """
         Execute RAG question-answering workflow on repository.
@@ -55,8 +121,12 @@ class ChatService:
         Returns:
             tuple[Conversation, assistant Message, list[MessageSource]]
         """
-        # 1. Enforce repository ownership & readiness
-        repo = await self._repo_dao.get_by_id(repository_id, user_id)
+        # 1. Verify repository exists & is ready within active organization
+        repo = (
+            await self._repo_dao.get_by_id_in_org(repository_id, organization_id)
+            if organization_id is not None
+            else await self._repo_dao.get_by_id_shared(repository_id)
+        )
         if not repo:
             raise NotFoundError("Repository not found")
 
@@ -75,6 +145,7 @@ class ChatService:
             title_snippet = question.strip()[:60]
             conv = Conversation(
                 user_id=user_id,
+                organization_id=organization_id,
                 repository_id=repository_id,
                 title=title_snippet,
             )
@@ -102,49 +173,71 @@ class ChatService:
         decision_service = get_decision_service()
         ranked_chunks = await decision_service.filter_and_rank(question, chunks)
 
-        # 5b. Graph-enhanced context extraction
+        # 5b. Graph-enhanced reasoning context extraction (Level 2)
         graph_context: Optional[str] = None
         if context_mode == "graph_enhanced":
-            graph_lines: list[str] = []
-            words = [w.strip("?,.:;()[]\"'") for w in question.split() if len(w) > 3]
-            matched_nodes = []
-            for word in words[:4]:
-                found = await self._graph_dao.search_nodes(
-                    workspace_id=user_id,
-                    repository_id=repository_id,
-                    query=word,
-                    limit=2,
+            from app.graph.reasoning import GraphReasoningService
+
+            entities = extract_query_entities(question)
+            graph_context = await GraphReasoningService(self._session).build_query_graph_context(
+                workspace_id=repo.user_id,
+                repository_id=repository_id,
+                question=question,
+                entities=entities,
+            )
+
+        # 5b. Retrieve project documentation context (Phase 6)
+        document_context: Optional[str] = None
+        if getattr(repo, "project_id", None) and getattr(repo, "organization_id", None):
+            try:
+                from sqlalchemy import select
+
+                query_emb = get_embedding_service().embed_text(question)
+                dist_expr = DocumentChunk.embedding.cosine_distance(query_emb)
+                doc_stmt = (
+                    select(
+                        Document.title,
+                        Document.file_name,
+                        DocumentChunk.section_title,
+                        DocumentChunk.page_number,
+                        DocumentChunk.content,
+                    )
+                    .join(Document, Document.id == DocumentChunk.document_id)
+                    .where(
+                        DocumentChunk.project_id == repo.project_id,
+                        DocumentChunk.organization_id == repo.organization_id,
+                        Document.status == "READY",
+                    )
+                    .order_by(dist_expr)
+                    .limit(4)
                 )
-                matched_nodes.extend(found)
+                doc_res = await self._session.execute(doc_stmt)
+                doc_rows = doc_res.all()
+                if doc_rows:
+                    doc_parts = []
+                    for d_title, d_file, sec, page, d_content in doc_rows:
+                        loc = f"Page {page}" if page else (sec or d_file)
+                        doc_parts.append(f"[Doc: {d_title} ({d_file} · {loc})]\n{d_content}")
+                    document_context = "\n\n".join(doc_parts)
+            except Exception as exc:
+                logger.warning("Document context retrieval skipped", error=str(exc))
 
-            seen_ids = set()
-            for node in matched_nodes[:3]:
-                if node.id in seen_ids:
-                    continue
-                seen_ids.add(node.id)
-                nbrs = await self._graph_dao.get_neighbors(
-                    workspace_id=user_id,
-                    node_id=node.id,
-                    limit=10,
-                )
-                graph_lines.append(f"Entity: {node.name} ({node.node_type}) at {node.source_uri or 'unknown'}")
-                for out_e in nbrs["outgoing_edges"][:5]:
-                    tgt_name = next((n.name for n in nbrs["neighbors"] if n.id == out_e.target_node_id), str(out_e.target_node_id))
-                    graph_lines.append(f"  - [{out_e.edge_type}] -> {tgt_name} (confidence={out_e.confidence})")
-                for in_e in nbrs["incoming_edges"][:5]:
-                    src_name = next((n.name for n in nbrs["neighbors"] if n.id == in_e.source_node_id), str(in_e.source_node_id))
-                    graph_lines.append(f"  - <- [{in_e.edge_type}] from {src_name} (confidence={in_e.confidence})")
+        # 6. Load recent conversation history & generate answer
+        prior_messages = await self._msg_dao.list_by_conversation(conv.id)
+        history_turns = [
+            (m.role, m.content)
+            for m in prior_messages
+            if m.id != user_msg.id
+        ][-6:]
 
-            if graph_lines:
-                graph_context = "\n".join(graph_lines)
-
-        # 6. Generate answer
         llm_service = get_llm_service()
         generator = RAGGenerator(llm_service)
         rag_output = await generator.generate_answer(
             question=question,
             retrieved_chunks=ranked_chunks,
             graph_context=graph_context,
+            history=history_turns,
+            document_context=document_context,
         )
 
         # 7. Persist assistant message & citations
@@ -170,6 +263,18 @@ class ChatService:
         if source_entities:
             await self._msg_dao.create_sources_batch(source_entities)
 
+        if organization_id is not None:
+            try:
+                from app.repositories.billing_repo import BillingRepository
+
+                await BillingRepository(self._session).record_usage(
+                    organization_id=organization_id,
+                    metric="ai_queries",
+                    quantity=1,
+                )
+            except Exception as exc:
+                logger.warning("Usage metering skipped", error=str(exc))
+
         await self._session.commit()
 
         # Preload sources for response formatting
@@ -178,10 +283,17 @@ class ChatService:
         return conv, saved_assistant_msg, source_entities
 
     async def list_conversations(
-        self, repository_id: UUID, user_id: UUID
+        self,
+        repository_id: UUID,
+        user_id: UUID,
+        organization_id: Optional[UUID] = None,
     ) -> Sequence[Conversation]:
         """List user's conversations for given repository."""
-        repo = await self._repo_dao.get_by_id(repository_id, user_id)
+        repo = (
+            await self._repo_dao.get_by_id_in_org(repository_id, organization_id)
+            if organization_id is not None
+            else await self._repo_dao.get_by_id_shared(repository_id)
+        )
         if not repo:
             raise NotFoundError("Repository not found")
         return await self._conv_dao.list_by_repository(repository_id, user_id)

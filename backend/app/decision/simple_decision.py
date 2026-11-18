@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Simple Decision Service (MVP Default).
+TrunkHQ — Simple Decision Service (MVP Default).
 
 Pass-through decision service that preserves vector-similarity ordering.
 Can be swapped with JEV (Judged Evaluation & Validation) when enabled.

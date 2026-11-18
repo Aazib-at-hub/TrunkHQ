@@ -1,5 +1,5 @@
 # =============================================================================
-# Cortex Engineering — Docker Compose
+# TrunkHQ — Docker Compose
 # =============================================================================
 # Usage:
 #   docker compose up -d          # Start all services
@@ -47,7 +47,7 @@ services:
       - ./backend:/app
       - backend-repos:/app/repos
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/v1/health')"]
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/v1/live').raise_for_status()"]
       interval: 30s
       timeout: 10s
       retries: 3

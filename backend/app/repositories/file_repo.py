@@ -1,5 +1,5 @@
 """
-Cortex Engineering — File Data Access.
+TrunkHQ — File Data Access.
 
 Database operations for RepositoryFile entity.
 """
@@ -69,5 +69,13 @@ class FileRepository:
     async def delete_by_repository(self, repository_id: UUID) -> int:
         """Delete all files belonging to a repository (cascades to chunks)."""
         stmt = delete(RepositoryFile).where(RepositoryFile.repository_id == repository_id)
+        res = await self._session.execute(stmt)
+        return res.rowcount or 0
+
+    async def delete_by_ids(self, file_ids: list[UUID]) -> int:
+        """Delete specific files by ID (cascades to chunks)."""
+        if not file_ids:
+            return 0
+        stmt = delete(RepositoryFile).where(RepositoryFile.id.in_(file_ids))
         res = await self._session.execute(stmt)
         return res.rowcount or 0

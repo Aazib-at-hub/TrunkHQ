@@ -1,58 +1,54 @@
-# Cortex Engineering — Security and Privacy Audit Report
+# TrunkHQ — Security and Privacy Audit Report
 
-**Assessment Framework:** OWASP Top 10 (2021), OWASP API Security Top 10, ASVS Level 2  
-**Audit Scope:** Authentication, Authorization, Command Injection, Data Isolation, Ingestion Hardening, Cryptography.
-
----
-
-## 1. Threat Modeling & Attack Surfaces
-
-| Attack Vector | Target Asset | Mechanism in Cortex | Implemented Defense | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| **CLI Flag Injection** | Host OS / Git | Branch input containing `--upload-pack=...` | Strict regex validator `^[a-zA-Z0-9._/-]+$` and `--` option terminator in `cloner.py`. | **VERIFIED SECURE** |
-| **Cross-Tenant IDOR** | Customer Codebases | Accessing `/repositories/{id}/...` of other users | Explicit ownership verification in `_verify_repo_access` and DB queries. | **VERIFIED SECURE** |
-| **Symlink Directory Escape** | Server Filesystem | Cloned repo symlink pointing to `/etc` or host files | `file_abs.resolve().is_relative_to(repo_root)` validation in `discovery.py`. | **VERIFIED SECURE** |
-| **JWT Key Forgery** | Authentication | Weak or default secret key in production | Lifespan audit check logging critical alert when default key is detected. | **VERIFIED SECURE** |
-| **SQL Injection** | PostgreSQL | Search queries & filtering | SQLAlchemy 2.0 parameterized queries and ORM mappings throughout. | **VERIFIED SECURE** |
-| **Stale Vector Pollution** | RAG Search | Repeated re-imports duplicating chunks | Cascade purge of obsolete files and chunks in `pipeline.py`. | **VERIFIED SECURE** |
+**Audit Date:** November 14, 2026  
+**Audit Scope:** Authentication, Authorization, IDOR, Command Injection, Data Isolation, Ingestion Hardening, Security Headers, Secrets Handling.
 
 ---
 
-## 2. In-Depth Vulnerability Analysis & Proof of Remediation
+## 1. Control Verification Matrix
 
-### Finding SEC-01: Git Command Option Injection via Branch Input (Severity: Critical / CVSS 9.1)
-* **Vulnerability Description:** The `branch` parameter on repository import allowed arbitrary strings. An attacker could pass git command-line options such as `--upload-pack` or `--config` to execute arbitrary commands during git execution.
-* **Remediation Implemented:**
-  1. Enforced validation in `app/schemas/repository.py`:
-     ```python
-     if cleaned.startswith("-") or ".." in cleaned or not re.match(r"^[a-zA-Z0-9._/-]+$", cleaned):
-         raise ValueError(f"Invalid branch name '{v}'. Branch must not start with '-' or contain '..'")
-     ```
-  2. Added `--` option terminator before positional arguments in `app/ingestion/cloner.py`.
-* **Evidence:** Automated test `test_branch_validation_blocks_option_injection` in `tests/unit/test_security_audit.py` passes.
-
-### Finding SEC-02: Non-Idempotent Ingestion & Vector Leakage (Severity: High / CVSS 7.5)
-* **Vulnerability Description:** Calling `/reindex` re-chunked and inserted code without deleting previous file or chunk records. Over time, outdated code chunks remained active in vector searches.
-* **Remediation Implemented:**
-  Added `delete_by_repository(repository_id)` in `app/repositories/file_repo.py`, which is invoked atomically inside `pipeline.py` before new chunks are persisted.
-* **Evidence:** Verified in pipeline workflow and Alembic cascade foreign keys.
-
-### Finding SEC-03: Symlink Traversal Protection (Severity: High / CVSS 8.2)
-* **Vulnerability Description:** Repositories containing symbolic links could point outside the clone directory, causing server configuration or secret files to be indexed into pgvector.
-* **Remediation Implemented:**
-  In `app/ingestion/discovery.py`, every file path is resolved and checked:
-  ```python
-  resolved_target = file_abs.resolve()
-  if not resolved_target.is_relative_to(repo_root_resolved):
-      logger.warning("Security: Skipping symlink escaping repo root", path=str(file_abs))
-      continue
-  ```
-* **Evidence:** Automated regression test in `tests/unit/test_security_audit.py`.
+| Control / Vector | Implementation / Location | Status |
+| :--- | :--- | :--- |
+| **CLI Flag Injection** | Branch regex `^[a-zA-Z0-9._/-]+$` in `schemas/repository.py` + `--` terminator in `ingestion/cloner.py` | **VERIFIED** (`test_security_audit.py`) |
+| **Symlink Directory Escape** | `resolved_target.is_relative_to(repo_root_resolved)` in `ingestion/discovery.py` | **VERIFIED** (`test_security_audit.py`) |
+| **Production JWT Secret Enforcement** | `lifespan` in `app/main.py` raises `RuntimeError` when `is_jwt_secret_insecure` and `not settings.debug` | **VERIFIED** (`test_security_hardening.py`) |
+| **Graph Reindex Ownership** | `reindex_graph` in `api/v1/graph.py` enforces `repo.user_id == current_user_id` (`ForbiddenError` 403) | **VERIFIED** (`test_security_hardening.py`) |
+| **Graph Repository Scoping (IDOR)** | `get_neighbors`, `find_path`, `get_impact` in `graph_repo.py` & `graph.py` enforce `repository_id == repo_id` | **VERIFIED** (`test_security_hardening.py`) |
+| **Admin Health Gating** | `GET /api/v1/health` requires `require_admin`; `/api/v1/live` returns minimal `{"status": "alive"}` | **VERIFIED** (`test_security_hardening.py`) |
+| **CORS & Security Headers** | `PATCH` included in CORS `allow_methods`; `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` middleware | **VERIFIED** (`test_security_hardening.py`) |
+| **SQL Injection** | SQLAlchemy 2.0 parameterized ORM / `bindparam` queries | **VERIFIED** (Code inspection) |
+| **Multi-Tenant SaaS Isolation** | Project Storage House intentionally shares repos/files/chunks/graph reads across authenticated users | **SINGLE-ORG ONLY (NO-GO FOR MULTI-TENANT SAAS)** |
 
 ---
 
-## 3. Privacy & Data Handling Policies
+## 2. Remediated Findings (This Audit)
 
-1. **Temporary Clone Cleanup:** All cloned repository files on disk in `backend/repos/<repo_id>` are automatically purged via `shutil.rmtree` inside the `finally` block of `pipeline.py`.
-2. **Secret Masking:** Database connection strings, API keys, and JWT secrets are stored exclusively in environment variables and never logged or serialized into API responses.
-3. **Repository Deletion Rights:** Deleting a repository deletes all cascaded records (files, chunks, embeddings, conversations, messages, citations, graph nodes, and graph edges) in PostgreSQL.
+### SEC-AUD-01 (P1): Missing Owner Check on `POST /repositories/{repo_id}/graph/reindex`
+* **Finding:** `reindex_graph` (`backend/app/api/v1/graph.py:356`) called `_verify_repo_access` (`get_by_id_shared`) without checking `repo.user_id == current_user_id`, allowing any authenticated user to overwrite or delete another user's graph nodes/edges.
+* **Fix:** Added `if repo.user_id != current_user_id: raise ForbiddenError(...)` in `backend/app/api/v1/graph.py`.
+* **Evidence:** `test_reindex_graph_rejects_non_owner` in `backend/tests/unit/test_security_hardening.py` passes.
+
+### SEC-AUD-02 (P1): Cross-Repository Graph Node IDOR
+* **Finding:** `get_node_neighbors`, `find_graph_path`, and `compute_graph_impact` (`backend/app/api/v1/graph.py`) passed `workspace_id=repo.user_id` without scoping `node_id` / edges to `repository_id=repo_id`.
+* **Fix:** Added `repository_id: Optional[UUID] = None` filtering in `GraphRepository.get_neighbors`, `find_path`, and `get_impact` (`backend/app/repositories/graph_repo.py`) and passed `repository_id=repo_id` from `backend/app/api/v1/graph.py`.
+* **Evidence:** `test_graph_repo_rejects_cross_repository_nodes` in `backend/tests/unit/test_security_hardening.py` passes.
+
+### SEC-AUD-03 (P1): Non-Debug Startup Allowed Insecure Default `JWT_SECRET_KEY`
+* **Finding:** `lifespan` (`backend/app/main.py:66-71`) logged `critical` when `not settings.debug` and `settings.is_jwt_secret_insecure`, but did not abort startup.
+* **Fix:** `lifespan` now raises `RuntimeError` in non-debug mode if `JWT_SECRET_KEY` is still the insecure default.
+* **Evidence:** `test_lifespan_refuses_insecure_jwt_in_non_debug_mode` passes.
+
+### SEC-AUD-04 (P1): Missing `PATCH` in CORS `allow_methods` & Missing Security Headers
+* **Finding:** `CORSMiddleware` in `backend/app/main.py` omitted `"PATCH"` despite `PATCH /repositories/{repo_id}` existing, and no HTTP security response headers were attached.
+* **Fix:** Added `"PATCH"` to `allow_methods` and added `add_security_headers` HTTP middleware (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`).
+* **Evidence:** `test_liveness_endpoint_and_security_headers` passes.
+
+---
+
+## 3. Remaining Security Risks (Unremediated / Architectural)
+
+1. **Cross-User Repo Visibility (P1 for Multi-Tenant):** `RepositoryRepository.get_by_id_shared` and `list_all` expose all indexed repos/files/chunks to every authenticated user. Acceptable for a single-org internal deployment; **blocking** for multi-tenant SaaS.
+2. **No Rate Limiting (P1):** Auth, import, chat, and graph reindex endpoints lack per-IP / per-user throttling.
+3. **GitHub Token in Clone URL Args (P2):** `clone_repository` (`backend/app/ingestion/cloner.py`) embeds `github_token` in CLI URL arguments during `git clone`.
+4. **Raw LLM Exception Leakage (P2):** `GoogleLLMService.generate_response` (`google_llm.py`) and `OpenAILLMService.generate_response` (`openai_llm.py`) wrap raw exceptions in `InternalServerError` returned to clients.
+5. **Static Prompt Delimiters (P2):** `build_user_prompt` (`backend/app/rag/prompt.py`) uses static `====` separators around retrieved code chunks and conversation history.

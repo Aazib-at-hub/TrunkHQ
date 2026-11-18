@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Modal } from "../ui/modal";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
@@ -26,6 +26,15 @@ export function AuthModal({
 
   const { login, register } = useAuthStore();
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const timer = setTimeout(() => {
+      setMode(defaultMode);
+      setErrorMsg("");
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [isOpen, defaultMode]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
@@ -33,9 +42,9 @@ export function AuthModal({
 
     try {
       if (mode === "login") {
-        await login(email, password);
+        await login(email.trim(), password);
       } else {
-        await register(email, username, password);
+        await register(email.trim(), username.trim(), password);
       }
       onClose();
       setEmail("");
@@ -56,7 +65,7 @@ export function AuthModal({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={mode === "login" ? "Sign In to Cortex" : "Create Account"}
+      title={mode === "login" ? "Sign In to TrunkHQ" : "Create Account"}
       description={
         mode === "login"
           ? "Access your indexed repositories and intelligence conversations"
@@ -64,7 +73,38 @@ export function AuthModal({
       }
       maxWidth="sm"
     >
-      <form onSubmit={handleSubmit} className="space-y-4 pt-2">
+      <div className="mt-1 mb-4 grid grid-cols-2 gap-1 rounded-lg border border-border-default bg-bg-primary p-1">
+        <button
+          type="button"
+          onClick={() => {
+            setMode("login");
+            setErrorMsg("");
+          }}
+          className={`cursor-pointer rounded-md py-1.5 text-xs font-medium transition ${
+            mode === "login"
+              ? "bg-emerald-600 text-white"
+              : "text-text-secondary hover:text-text-primary"
+          }`}
+        >
+          Sign In
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setMode("register");
+            setErrorMsg("");
+          }}
+          className={`cursor-pointer rounded-md py-1.5 text-xs font-medium transition ${
+            mode === "register"
+              ? "bg-emerald-600 text-white"
+              : "text-text-secondary hover:text-text-primary"
+          }`}
+        >
+          Sign Up
+        </button>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-4">
         {errorMsg && (
           <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 text-xs text-rose-300">
             {errorMsg}
@@ -85,6 +125,10 @@ export function AuthModal({
             label="Username"
             type="text"
             required
+            minLength={3}
+            maxLength={50}
+            pattern="^[a-zA-Z0-9_-]+$"
+            helperText="3–50 characters: letters, numbers, _ or -"
             placeholder="octocat"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -95,6 +139,8 @@ export function AuthModal({
           label="Password"
           type="password"
           required
+          minLength={mode === "register" ? 8 : 1}
+          helperText={mode === "register" ? "Minimum 8 characters" : undefined}
           placeholder="••••••••••••"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -103,38 +149,6 @@ export function AuthModal({
         <Button type="submit" variant="primary" className="w-full" isLoading={loading}>
           {mode === "login" ? "Sign In" : "Create Account"}
         </Button>
-
-        <div className="text-center pt-2 text-xs text-text-tertiary">
-          {mode === "login" ? (
-            <span>
-              Don&apos;t have an account?{" "}
-              <button
-                type="button"
-                onClick={() => {
-                  setMode("register");
-                  setErrorMsg("");
-                }}
-                className="text-indigo-400 hover:text-indigo-300 font-medium underline-offset-2 hover:underline cursor-pointer"
-              >
-                Sign up
-              </button>
-            </span>
-          ) : (
-            <span>
-              Already have an account?{" "}
-              <button
-                type="button"
-                onClick={() => {
-                  setMode("login");
-                  setErrorMsg("");
-                }}
-                className="text-indigo-400 hover:text-indigo-300 font-medium underline-offset-2 hover:underline cursor-pointer"
-              >
-                Sign in
-              </button>
-            </span>
-          )}
-        </div>
       </form>
     </Modal>
   );

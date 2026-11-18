@@ -1,5 +1,5 @@
 """
-Cortex Engineering — TypeScript / JavaScript AST & Lexical Graph Extractor.
+TrunkHQ — TypeScript / JavaScript AST & Lexical Graph Extractor.
 
 Extracts files, components, functions, classes, interfaces, imports, and calls
 from TypeScript and JavaScript source files (.ts, .tsx, .js, .jsx, .mjs, .cjs).
@@ -71,6 +71,24 @@ RE_JSDOC = re.compile(
     re.MULTILINE,
 )
 
+RE_CLASS_METHOD = re.compile(
+    r"""^\s*(?:(?:public|private|protected|static|readonly|override|abstract|async)\s+)*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::\s*[^\{;\n]+)?\s*\{""",
+    re.MULTILINE,
+)
+
+RE_NS_CALL = re.compile(
+    r"""\b([a-zA-Z0-9_$]+)\.([a-zA-Z0-9_$]+)\s*\(""",
+    re.MULTILINE,
+)
+
+_TS_KEYWORDS = {
+    "if", "for", "while", "switch", "catch", "return", "typeof", "new",
+    "super", "constructor", "import", "export", "await", "throw", "delete",
+}
+
+_TS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_TS_INDEX_FILES = ("/index.ts", "/index.tsx", "/index.js", "/index.jsx")
+
 
 class TypeScriptGraphExtractor:
     """Extracts code graph entities and relationships from TypeScript/JavaScript source."""
@@ -81,6 +99,7 @@ class TypeScriptGraphExtractor:
         relative_path: str,
         content: str,
         content_hash: Optional[str] = None,
+        repo_paths: Optional[set[str]] = None,
     ) -> ExtractionResult:
         """Parse TypeScript/JavaScript source and extract symbols and relationships."""
         result = ExtractionResult()
@@ -126,12 +145,20 @@ class TypeScriptGraphExtractor:
             )
         )
 
-        # Track symbols defined in this file
+        # Track symbols defined in this file and imported aliases
         defined_symbols: dict[str, str] = {}  # symbol_name -> stable_key
+        import_aliases: dict[str, tuple[str, Optional[str]]] = {}  # local_name -> (target_file, orig_sym_or_None)
 
         # 1. Extract Imports
         self._extract_imports(
-            repository_id, norm_path, content, file_key, content_hash, result
+            repository_id,
+            norm_path,
+            content,
+            file_key,
+            content_hash,
+            repo_paths,
+            import_aliases,
+            result,
         )
 
         # 2. Extract Classes & Methods
@@ -142,7 +169,9 @@ class TypeScriptGraphExtractor:
             file_key,
             content_hash,
             get_line_number,
+            is_test_file,
             defined_symbols,
+            import_aliases,
             result,
         )
 
@@ -189,19 +218,58 @@ class TypeScriptGraphExtractor:
             norm_path,
             content,
             defined_symbols,
+            import_aliases,
             result,
         )
 
         return result
 
-    def _resolve_relative_import(self, current_file: str, import_path: str) -> str:
-        """Resolve a relative import (e.g., './foo', '../bar') to a repository file path."""
+    def _resolve_relative_import(
+        self,
+        current_file: str,
+        import_path: str,
+        repo_paths: Optional[set[str]] = None,
+    ) -> str:
+        """Resolve a relative or alias import (e.g., './foo', '@/bar') to a repository file path."""
+        if import_path.startswith("@/"):
+            rel_candidate = import_path[2:]
+            candidates = [rel_candidate]
+            if not Path(rel_candidate).suffix:
+                candidates.extend(f"{rel_candidate}{ext}" for ext in _TS_EXTENSIONS)
+                candidates.extend(f"{rel_candidate}{idx}" for idx in _TS_INDEX_FILES)
+            if repo_paths:
+                for cand in candidates:
+                    norm_cand = normalize_path(cand)
+                    if norm_cand in repo_paths:
+                        return norm_cand
+                    # Common frontend/src/ prefix
+                    for prefix in ("frontend/", "src/", "frontend/src/"):
+                        prefixed = normalize_path(f"{prefix}{cand}")
+                        if prefixed in repo_paths:
+                            return prefixed
+            return normalize_path(candidates[1] if len(candidates) > 1 else rel_candidate)
+
         if not (import_path.startswith("./") or import_path.startswith("../")):
             return import_path
 
         current_dir = os.path.dirname(current_file)
-        joined = os.path.normpath(os.path.join(current_dir, import_path)).replace("\\", "/")
-        return joined
+        joined = normalize_path(os.path.normpath(os.path.join(current_dir, import_path)).replace("\\", "/"))
+
+        if Path(joined).suffix:
+            if repo_paths and joined in repo_paths:
+                return joined
+            return joined
+
+        candidates = [joined]
+        candidates.extend(f"{joined}{ext}" for ext in _TS_EXTENSIONS)
+        candidates.extend(f"{joined}{idx}" for idx in _TS_INDEX_FILES)
+
+        if repo_paths:
+            for cand in candidates:
+                if cand in repo_paths:
+                    return cand
+
+        return f"{joined}.ts"
 
     def _extract_imports(
         self,
@@ -210,9 +278,11 @@ class TypeScriptGraphExtractor:
         content: str,
         file_key: str,
         content_hash: Optional[str],
+        repo_paths: Optional[set[str]],
+        import_aliases: dict[str, tuple[str, Optional[str]]],
         result: ExtractionResult,
     ) -> None:
-        """Extract import statements and build IMPORTS edges."""
+        """Extract import/require statements, build alias map, and emit IMPORTS edges."""
         for m in RE_IMPORT.finditer(content):
             default_imp = m.group(1)
             named_imp1 = m.group(2)
@@ -220,11 +290,19 @@ class TypeScriptGraphExtractor:
             named_imp2 = m.group(4)
             import_source = m.group(5)
 
-            resolved_path = self._resolve_relative_import(relative_path, import_source)
-            is_local = import_source.startswith("./") or import_source.startswith("../") or import_source.startswith("@/")
+            is_local = (
+                import_source.startswith("./")
+                or import_source.startswith("../")
+                or import_source.startswith("@/")
+            )
+            resolved_path = (
+                self._resolve_relative_import(relative_path, import_source, repo_paths)
+                if is_local
+                else import_source
+            )
 
             target_key = (
-                f"repo:{repository_id}:file:{resolved_path}"
+                make_file_key(repository_id, resolved_path)
                 if is_local
                 else f"repo:{repository_id}:symbol:{import_source}:external"
             )
@@ -232,15 +310,72 @@ class TypeScriptGraphExtractor:
             imported_names = []
             if default_imp:
                 imported_names.append(default_imp)
+                if is_local:
+                    import_aliases[default_imp] = (resolved_path, default_imp)
             if star_imp:
                 imported_names.append(star_imp)
+                if is_local:
+                    import_aliases[star_imp] = (resolved_path, None)
             for named in (named_imp1, named_imp2):
                 if named:
                     for item in named.split(","):
-                        clean_item = item.strip().split(" as ")[0].strip()
-                        if clean_item:
-                            imported_names.append(clean_item)
+                        parts = [p.strip() for p in item.strip().split(" as ") if p.strip()]
+                        if not parts:
+                            continue
+                        orig_name = parts[0].removeprefix("type ").strip()
+                        local_name = parts[1] if len(parts) > 1 else orig_name
+                        if orig_name:
+                            imported_names.append(orig_name)
+                            if is_local:
+                                import_aliases[local_name] = (resolved_path, orig_name)
 
+            result.edges.append(
+                ExtractedEdge(
+                    source_key=file_key,
+                    target_key=target_key,
+                    edge_type=EdgeType.IMPORTS,
+                    properties={
+                        "module": import_source,
+                        "resolved_path": resolved_path if is_local else None,
+                        "imported_names": imported_names[:10],
+                        "is_external": not is_local,
+                    },
+                    confidence=0.95 if (is_local and repo_paths and resolved_path in repo_paths) else (0.9 if is_local else 0.7),
+                    evidence_kind="static",
+                    source_uri=relative_path,
+                    content_hash=content_hash,
+                )
+            )
+
+        for m in RE_REQUIRE.finditer(content):
+            default_imp = m.group(1)
+            named_imp = m.group(2)
+            import_source = m.group(3)
+            is_local = import_source.startswith("./") or import_source.startswith("../")
+            resolved_path = (
+                self._resolve_relative_import(relative_path, import_source, repo_paths)
+                if is_local
+                else import_source
+            )
+            target_key = (
+                make_file_key(repository_id, resolved_path)
+                if is_local
+                else f"repo:{repository_id}:symbol:{import_source}:external"
+            )
+            imported_names = []
+            if default_imp:
+                imported_names.append(default_imp)
+                if is_local:
+                    import_aliases[default_imp] = (resolved_path, None)
+            if named_imp:
+                for item in named_imp.split(","):
+                    parts = [p.strip() for p in item.strip().split(":") if p.strip()]
+                    if parts:
+                        orig = parts[0]
+                        local = parts[1] if len(parts) > 1 else orig
+                        imported_names.append(orig)
+                        if is_local:
+                            import_aliases[local] = (resolved_path, orig)
             result.edges.append(
                 ExtractedEdge(
                     source_key=file_key,
@@ -267,7 +402,9 @@ class TypeScriptGraphExtractor:
         file_key: str,
         content_hash: Optional[str],
         get_line_number: Callable[[int], int],
+        is_test_file: bool,
         defined_symbols: dict[str, str],
+        import_aliases: dict[str, tuple[str, Optional[str]]],
         result: ExtractionResult,
     ) -> None:
         """Extract class definitions, inheritance, and methods."""
@@ -313,10 +450,16 @@ class TypeScriptGraphExtractor:
 
             # Inheritance
             if base_cls:
-                target_base_key = defined_symbols.get(
-                    base_cls,
-                    make_symbol_key(repository_id, relative_path, base_cls, "class"),
-                )
+                target_base_key = defined_symbols.get(base_cls)
+                if not target_base_key and base_cls in import_aliases:
+                    imp_file, imp_sym = import_aliases[base_cls]
+                    target_base_key = make_symbol_key(
+                        repository_id, imp_file, imp_sym or base_cls, "class"
+                    )
+                if not target_base_key:
+                    target_base_key = make_symbol_key(
+                        repository_id, relative_path, base_cls, "class"
+                    )
                 result.edges.append(
                     ExtractedEdge(
                         source_key=cls_key,
@@ -334,12 +477,20 @@ class TypeScriptGraphExtractor:
                 for iface in implements_clause.split(","):
                     iface_clean = iface.strip()
                     if iface_clean:
+                        target_iface_key = defined_symbols.get(iface_clean)
+                        if not target_iface_key and iface_clean in import_aliases:
+                            imp_file, imp_sym = import_aliases[iface_clean]
+                            target_iface_key = make_symbol_key(
+                                repository_id, imp_file, imp_sym or iface_clean, "interface"
+                            )
+                        if not target_iface_key:
+                            target_iface_key = make_symbol_key(
+                                repository_id, relative_path, iface_clean, "interface"
+                            )
                         result.edges.append(
                             ExtractedEdge(
                                 source_key=cls_key,
-                                target_key=make_symbol_key(
-                                    repository_id, relative_path, iface_clean, "interface"
-                                ),
+                                target_key=target_iface_key,
                                 edge_type=EdgeType.IMPLEMENTS,
                                 properties={"interface_name": iface_clean},
                                 confidence=0.9,
@@ -347,6 +498,57 @@ class TypeScriptGraphExtractor:
                                 source_uri=relative_path,
                             )
                         )
+
+            # Extract methods inside brace-balanced class body
+            body_start = content.find("{", m.end())
+            if body_start != -1:
+                depth = 0
+                body_end = body_start
+                for idx in range(body_start, len(content)):
+                    ch = content[idx]
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            body_end = idx
+                            break
+                class_body = content[body_start + 1 : body_end]
+                for mm in RE_CLASS_METHOD.finditer(class_body):
+                    method_name = mm.group(1)
+                    if method_name in _TS_KEYWORDS:
+                        continue
+                    method_qual = f"{cls_name}.{method_name}"
+                    method_key = make_symbol_key(
+                        repository_id, relative_path, method_qual, "method"
+                    )
+                    defined_symbols[method_name] = method_key
+                    defined_symbols[method_qual] = method_key
+                    method_line = get_line_number(body_start + 1 + mm.start())
+                    is_test_m = is_test_file and method_name.startswith("test")
+                    result.nodes.append(
+                        ExtractedNode(
+                            node_type=NodeType.TEST if is_test_m else NodeType.METHOD,
+                            stable_key=method_key,
+                            name=method_name,
+                            qualified_name=f"{relative_path}::{method_qual}",
+                            description=self._find_preceding_jsdoc(content, body_start + 1 + mm.start()),
+                            properties={"start_line": method_line, "path": relative_path, "class": cls_name},
+                            source_kind="code",
+                            source_uri=relative_path,
+                            content_hash=content_hash,
+                        )
+                    )
+                    result.edges.append(
+                        ExtractedEdge(
+                            source_key=cls_key,
+                            target_key=method_key,
+                            edge_type=EdgeType.CONTAINS,
+                            confidence=1.0,
+                            evidence_kind="static",
+                            source_uri=relative_path,
+                        )
+                    )
 
     def _extract_functions(
         self,
@@ -584,25 +786,64 @@ class TypeScriptGraphExtractor:
         relative_path: str,
         content: str,
         defined_symbols: dict[str, str],
+        import_aliases: dict[str, tuple[str, Optional[str]]],
         result: ExtractionResult,
     ) -> None:
-        """Detect intra-file and inter-symbol function calls."""
-        if not defined_symbols:
+        """Detect intra-file and cross-file function calls."""
+        if not defined_symbols and not import_aliases:
             return
 
+        file_key = make_file_key(repository_id, relative_path)
+        seen_targets: set[str] = set()
+
+        # Namespace/module calls: ns.fn()
+        for m in RE_NS_CALL.finditer(content):
+            ns_name, fn_name = m.group(1), m.group(2)
+            if ns_name in import_aliases:
+                imp_file, imp_sym = import_aliases[ns_name]
+                if imp_sym is None:
+                    target_key = make_symbol_key(repository_id, imp_file, fn_name, "function")
+                else:
+                    target_key = make_symbol_key(repository_id, imp_file, f"{imp_sym}.{fn_name}", "method")
+                if target_key not in seen_targets:
+                    seen_targets.add(target_key)
+                    result.edges.append(
+                        ExtractedEdge(
+                            source_key=file_key,
+                            target_key=target_key,
+                            edge_type=EdgeType.CALLS,
+                            properties={"callee": f"{ns_name}.{fn_name}"},
+                            confidence=0.8,
+                            evidence_kind="static",
+                            source_uri=relative_path,
+                        )
+                    )
+
+        # Direct calls: fn()
         for m in RE_CALL.finditer(content):
             callee_name = m.group(1)
+            if callee_name in _TS_KEYWORDS:
+                continue
+            target_key: Optional[str] = None
+            confidence = 0.8
             if callee_name in defined_symbols:
                 target_key = defined_symbols[callee_name]
-                # Edge from file to callee
-                file_key = make_file_key(repository_id, relative_path)
+            elif callee_name in import_aliases:
+                imp_file, imp_sym = import_aliases[callee_name]
+                target_key = make_symbol_key(
+                    repository_id, imp_file, imp_sym or callee_name, "function"
+                )
+                confidence = 0.85
+
+            if target_key and target_key not in seen_targets:
+                seen_targets.add(target_key)
                 result.edges.append(
                     ExtractedEdge(
                         source_key=file_key,
                         target_key=target_key,
                         edge_type=EdgeType.CALLS,
                         properties={"callee": callee_name},
-                        confidence=0.8,
+                        confidence=confidence,
                         evidence_kind="static",
                         source_uri=relative_path,
                     )

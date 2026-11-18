@@ -57,9 +57,9 @@ export function GraphInsightsPanel({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="w-full max-w-4xl bg-[#12131c] border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]">
+      <div className="w-full max-w-4xl bg-bg-secondary border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]">
         {/* Header */}
-        <div className="p-5 border-b border-white/5 flex items-center justify-between bg-gradient-to-r from-indigo-950/40 via-purple-950/20 to-transparent">
+        <div className="p-5 border-b border-white/5 flex items-center justify-between bg-gradient-to-r from-emerald-950/40 via-sky-950/20 to-transparent">
           <div className="flex items-center gap-3">
             <div className="p-2.5 rounded-xl bg-accent/15 text-accent border border-accent/30 shadow-inner">
               <Sparkles className="w-5 h-5" />
@@ -99,7 +99,7 @@ export function GraphInsightsPanel({
             <>
               {/* Domain Stats Row */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <div className="p-4 rounded-xl bg-[#191a24] border border-white/5">
+                <div className="p-4 rounded-xl bg-bg-tertiary border border-white/5">
                   <span className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary">
                     Total Entities
                   </span>
@@ -111,7 +111,7 @@ export function GraphInsightsPanel({
                   </span>
                 </div>
 
-                <div className="p-4 rounded-xl bg-[#191a24] border border-sky-500/20">
+                <div className="p-4 rounded-xl bg-bg-tertiary border border-sky-500/20">
                   <span className="text-[10px] font-mono uppercase tracking-wider text-sky-400">
                     Code Symbols
                   </span>
@@ -121,7 +121,7 @@ export function GraphInsightsPanel({
                   <span className="text-[11px] text-text-secondary">Functions, classes & files</span>
                 </div>
 
-                <div className="p-4 rounded-xl bg-[#191a24] border border-emerald-500/20">
+                <div className="p-4 rounded-xl bg-bg-tertiary border border-emerald-500/20">
                   <span className="text-[10px] font-mono uppercase tracking-wider text-emerald-400">
                     Architecture
                   </span>
@@ -131,7 +131,7 @@ export function GraphInsightsPanel({
                   <span className="text-[11px] text-text-secondary">Endpoints, services & tables</span>
                 </div>
 
-                <div className="p-4 rounded-xl bg-[#191a24] border border-amber-500/20">
+                <div className="p-4 rounded-xl bg-bg-tertiary border border-amber-500/20">
                   <span className="text-[10px] font-mono uppercase tracking-wider text-amber-400">
                     Knowledge Docs
                   </span>
@@ -145,7 +145,7 @@ export function GraphInsightsPanel({
               {/* Hub Nodes & Entrypoints Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 {/* Hub Nodes (Highest Centrality) */}
-                <div className="p-4 rounded-xl bg-[#161722] border border-white/5 flex flex-col">
+                <div className="p-4 rounded-xl bg-bg-tertiary border border-white/5 flex flex-col">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <TrendingUp className="w-4 h-4 text-amber-400" />
@@ -172,7 +172,7 @@ export function GraphInsightsPanel({
                             onSelectNode(item.node);
                             onClose();
                           }}
-                          className="p-2.5 rounded-lg bg-[#1c1d2b] hover:bg-[#232438] border border-white/5 hover:border-accent/40 transition-all cursor-pointer flex items-center justify-between gap-3 group"
+                          className="p-2.5 rounded-lg bg-bg-elevated hover:bg-bg-surface border border-white/5 hover:border-accent/40 transition-all cursor-pointer flex items-center justify-between gap-3 group"
                         >
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 mb-0.5">
@@ -193,7 +193,7 @@ export function GraphInsightsPanel({
                               <ArrowDownLeft className="w-3 h-3 mr-0.5" />
                               {item.in_degree}
                             </span>
-                            <span className="flex items-center text-indigo-400" title="Outgoing calls">
+                            <span className="flex items-center text-emerald-400" title="Outgoing calls">
                               <ArrowUpRight className="w-3 h-3 mr-0.5" />
                               {item.out_degree}
                             </span>
@@ -205,7 +205,7 @@ export function GraphInsightsPanel({
                 </div>
 
                 {/* Entrypoints & Public Interfaces */}
-                <div className="p-4 rounded-xl bg-[#161722] border border-white/5 flex flex-col">
+                <div className="p-4 rounded-xl bg-bg-tertiary border border-white/5 flex flex-col">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <Globe className="w-4 h-4 text-emerald-400" />
@@ -232,7 +232,7 @@ export function GraphInsightsPanel({
                             onSelectNode(item.node);
                             onClose();
                           }}
-                          className="p-2.5 rounded-lg bg-[#1c1d2b] hover:bg-[#232438] border border-white/5 hover:border-emerald-500/40 transition-all cursor-pointer flex items-center justify-between gap-3 group"
+                          className="p-2.5 rounded-lg bg-bg-elevated hover:bg-bg-surface border border-white/5 hover:border-emerald-500/40 transition-all cursor-pointer flex items-center justify-between gap-3 group"
                         >
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 mb-0.5">
@@ -259,9 +259,9 @@ export function GraphInsightsPanel({
               </div>
 
               {/* Key Modules / Directory Clusters */}
-              <div className="p-4 rounded-xl bg-[#161722] border border-white/5">
+              <div className="p-4 rounded-xl bg-bg-tertiary border border-white/5">
                 <div className="flex items-center gap-2 mb-2">
-                  <FolderTree className="w-4 h-4 text-indigo-400" />
+                  <FolderTree className="w-4 h-4 text-emerald-400" />
                   <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wider">
                     Module Footprint & Clusters
                   </h3>
@@ -270,7 +270,7 @@ export function GraphInsightsPanel({
                   {insights.key_modules.map((m) => (
                     <div
                       key={m.module}
-                      className="p-2.5 rounded-lg bg-[#1c1d2b] border border-white/5 flex items-center justify-between"
+                      className="p-2.5 rounded-lg bg-bg-elevated border border-white/5 flex items-center justify-between"
                     >
                       <span className="text-xs font-mono text-text-secondary truncate">{m.module}/</span>
                       <span className="text-xs font-bold text-accent font-mono ml-2">
@@ -285,7 +285,7 @@ export function GraphInsightsPanel({
         </div>
 
         {/* Footer Actions */}
-        <div className="p-4 border-t border-white/5 bg-[#101118] flex items-center justify-between">
+        <div className="p-4 border-t border-white/5 bg-bg-primary flex items-center justify-between">
           <button
             onClick={() => {
               onClose();

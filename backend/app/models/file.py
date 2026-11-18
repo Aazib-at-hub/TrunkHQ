@@ -1,5 +1,5 @@
 """
-Cortex Engineering — File Model.
+TrunkHQ — File Model.
 
 Represents a discovered and filtered file within an imported repository.
 Tracks file path, language, size, and content hash for deduplication.

@@ -1,5 +1,5 @@
 """
-Cortex Engineering — OpenAI LLM Service.
+TrunkHQ — OpenAI LLM Service.
 
 Integrates with OpenAI chat completions API (e.g. gpt-4o-mini).
 """
@@ -49,4 +49,6 @@ class OpenAILLMService(BaseLLMService):
             return response.choices[0].message.content or ""
         except Exception as exc:
             logger.error("OpenAI chat completion failed", error=str(exc))
-            raise InternalServerError(f"OpenAI generation error: {exc}") from exc
+            raise InternalServerError(
+                "LLM generation failed due to an upstream provider error."
+            ) from exc

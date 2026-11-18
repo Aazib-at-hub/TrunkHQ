@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Application Exceptions.
+TrunkHQ — Application Exceptions.
 
 Defines a hierarchy of domain exceptions that are caught by the API layer
 and translated into consistent HTTP error responses. Business logic raises

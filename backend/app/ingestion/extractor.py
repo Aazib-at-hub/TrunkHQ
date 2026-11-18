@@ -1,5 +1,5 @@
 """
-Cortex Engineering — File Content Extractor.
+TrunkHQ — File Content Extractor.
 
 Reads file contents safely using multiple encodings and computes SHA-256 hashes
 for deduplication and content integrity checks.

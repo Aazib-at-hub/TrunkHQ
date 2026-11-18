@@ -1,1 +1,1 @@
-"""Cortex Engineering Backend Application."""
+"""TrunkHQ Backend Application."""

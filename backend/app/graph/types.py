@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Relationship Graph Extraction Data Structures.
+TrunkHQ — Relationship Graph Extraction Data Structures.
 """
 
 from __future__ import annotations

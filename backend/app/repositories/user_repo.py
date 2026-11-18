@@ -1,5 +1,5 @@
 """
-Cortex Engineering — User Data Access.
+TrunkHQ — User Data Access.
 
 Database operations for the User entity. All queries are parameterized
 through SQLAlchemy ORM — no raw SQL.

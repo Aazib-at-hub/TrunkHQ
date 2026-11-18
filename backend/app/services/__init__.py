@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Services Module.
+TrunkHQ — Services Module.
 
 Business logic layer providing use-case execution for Auth, Repositories, and Chat.
 """

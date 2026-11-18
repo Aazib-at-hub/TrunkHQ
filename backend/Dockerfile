@@ -14,10 +14,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create repos directory for cloned repositories
-RUN mkdir -p /app/repos
+# Create non-root user and writable repos directory
+RUN useradd --create-home --shell /bin/bash cortex && \
+    mkdir -p /app/repos && \
+    chown -R cortex:cortex /app
+
+USER cortex
 
 EXPOSE 8000
 
-# Run with uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD python -c "import httpx; httpx.get('http://localhost:8000/api/v1/live').raise_for_status()"
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

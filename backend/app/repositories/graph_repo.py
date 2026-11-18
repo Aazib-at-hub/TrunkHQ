@@ -1,5 +1,5 @@
 """
-Cortex Engineering — Relationship Graph Data Access Object.
+TrunkHQ — Relationship Graph Data Access Object.
 
 Provides high-performance, workspace-isolated access to nodes, edges,
 index runs, neighborhood traversals, impact analysis, and paths.
@@ -85,12 +85,41 @@ class GraphRepository:
         Returns:
             dict mapping stable_key -> node UUID
         """
+        key_to_id, _, _ = await self.upsert_nodes_with_stats(workspace_id, repository_id, nodes)
+        return key_to_id
+
+    async def upsert_nodes_with_stats(
+        self,
+        workspace_id: UUID,
+        repository_id: UUID,
+        nodes: list[dict[str, Any]],
+    ) -> tuple[dict[str, UUID], int, int]:
+        """Idempotently upsert graph nodes and return (key_to_id, created_count, updated_count)."""
         if not nodes:
-            return {}
+            return {}, 0, 0
+
+        existing_keys: set[str] = set()
+        incoming_keys = [item["stable_key"] for item in nodes]
+        existing_res = await self._session.execute(
+            select(GraphNode.stable_key).where(
+                GraphNode.workspace_id == workspace_id,
+                GraphNode.stable_key.in_(incoming_keys),
+            )
+        )
+        existing_keys = set(existing_res.scalars().all())
 
         key_to_id: dict[str, UUID] = {}
+        created_count = 0
+        updated_count = 0
 
         for item in nodes:
+            skey = item["stable_key"]
+            if skey in existing_keys:
+                updated_count += 1
+            else:
+                created_count += 1
+                existing_keys.add(skey)
+
             node_id = item.get("id") or uuid.uuid4()
             stmt = (
                 pg_insert(GraphNode)
@@ -99,7 +128,7 @@ class GraphRepository:
                     workspace_id=workspace_id,
                     repository_id=repository_id,
                     node_type=item["node_type"],
-                    stable_key=item["stable_key"],
+                    stable_key=skey,
                     name=item["name"],
                     qualified_name=item.get("qualified_name"),
                     description=item.get("description"),
@@ -131,7 +160,7 @@ class GraphRepository:
             key_to_id[row.stable_key] = row.id
 
         await self._session.flush()
-        return key_to_id
+        return key_to_id, created_count, updated_count
 
     async def upsert_edges(
         self,
@@ -145,11 +174,38 @@ class GraphRepository:
         Returns:
             Number of successfully upserted edges
         """
+        total_count, _, _ = await self.upsert_edges_with_stats(workspace_id, repository_id, edges)
+        return total_count
+
+    async def upsert_edges_with_stats(
+        self,
+        workspace_id: UUID,
+        repository_id: UUID,
+        edges: list[dict[str, Any]],
+    ) -> tuple[int, int, int]:
+        """Idempotently upsert graph edges and return (total_count, created_count, updated_count)."""
         if not edges:
-            return 0
+            return 0, 0, 0
+
+        existing_res = await self._session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.edge_type).where(
+                GraphEdge.workspace_id == workspace_id,
+                GraphEdge.repository_id == repository_id,
+            )
+        )
+        existing_triples = {(r[0], r[1], r[2]) for r in existing_res.all()}
 
         count = 0
+        created_count = 0
+        updated_count = 0
         for item in edges:
+            triple = (item["source_node_id"], item["target_node_id"], item["edge_type"])
+            if triple in existing_triples:
+                updated_count += 1
+            else:
+                created_count += 1
+                existing_triples.add(triple)
+
             edge_id = item.get("id") or uuid.uuid4()
             stmt = (
                 pg_insert(GraphEdge)
@@ -184,7 +240,7 @@ class GraphRepository:
             count += 1
 
         await self._session.flush()
-        return count
+        return count, created_count, updated_count
 
     async def reconcile_deleted_entities(
         self,
@@ -193,20 +249,17 @@ class GraphRepository:
         active_stable_keys: set[str],
     ) -> tuple[int, int]:
         """
-        Remove nodes and edges whose source code entities no longer exist.
+        Remove nodes and edges whose source entities no longer exist in the repository.
 
-        Only purges source_kind='code' entities so docs and decisions are preserved.
+        Reconciles stale entities across all source_kind values for the repository.
         """
-        # Find stale code nodes
-        stmt = (
-            select(GraphNode.id)
-            .where(
-                GraphNode.workspace_id == workspace_id,
-                GraphNode.repository_id == repository_id,
-                GraphNode.source_kind == "code",
-                GraphNode.stable_key.not_in(active_stable_keys),
-            )
+        # Find stale nodes across all source_kind values
+        stmt = select(GraphNode.id).where(
+            GraphNode.workspace_id == workspace_id,
+            GraphNode.repository_id == repository_id,
         )
+        if active_stable_keys:
+            stmt = stmt.where(GraphNode.stable_key.not_in(active_stable_keys))
         res = await self._session.execute(stmt)
         stale_ids = res.scalars().all()
 
@@ -270,14 +323,51 @@ class GraphRepository:
         repository_id: UUID,
         node_types: Optional[list[str]] = None,
         limit: int = 300,
+        offset: int = 0,
     ) -> Sequence[GraphNode]:
-        """Fetch bounded list of nodes in a repository."""
+        """Fetch bounded, paginated list of nodes in a repository."""
         stmt = select(GraphNode).where(
             GraphNode.workspace_id == workspace_id,
             GraphNode.repository_id == repository_id,
         )
         if node_types:
             stmt = stmt.where(GraphNode.node_type.in_(node_types))
+        stmt = stmt.order_by(GraphNode.created_at.asc()).offset(offset).limit(limit)
+        res = await self._session.execute(stmt)
+        return res.scalars().all()
+
+    async def get_nodes_by_repositories(
+        self,
+        repository_ids: list[UUID],
+        node_types: Optional[list[str]] = None,
+        limit: int = 300,
+        offset: int = 0,
+    ) -> Sequence[GraphNode]:
+        """Fetch bounded, paginated nodes across multiple repositories in a project."""
+        if not repository_ids:
+            return []
+        stmt = select(GraphNode).where(GraphNode.repository_id.in_(repository_ids))
+        if node_types:
+            stmt = stmt.where(GraphNode.node_type.in_(node_types))
+        stmt = stmt.order_by(GraphNode.created_at.asc()).offset(offset).limit(limit)
+        res = await self._session.execute(stmt)
+        return res.scalars().all()
+
+    async def get_edges_by_repositories(
+        self,
+        repository_ids: list[UUID],
+        node_ids: Optional[set[UUID]] = None,
+        limit: int = 600,
+    ) -> Sequence[GraphEdge]:
+        """Fetch bounded edges across multiple repositories in a project."""
+        if not repository_ids:
+            return []
+        stmt = select(GraphEdge).where(GraphEdge.repository_id.in_(repository_ids))
+        if node_ids:
+            stmt = stmt.where(
+                GraphEdge.source_node_id.in_(node_ids),
+                GraphEdge.target_node_id.in_(node_ids),
+            )
         stmt = stmt.limit(limit)
         res = await self._session.execute(stmt)
         return res.scalars().all()
@@ -310,6 +400,7 @@ class GraphRepository:
         edge_types: Optional[list[str]] = None,
         direction: str = "both",
         limit: int = 100,
+        repository_id: Optional[UUID] = None,
     ) -> dict[str, Any]:
         """
         Retrieve 1-hop neighborhood of a node.
@@ -318,7 +409,7 @@ class GraphRepository:
             dict containing node, outgoing_edges, incoming_edges, and neighbor nodes.
         """
         node = await self.get_node(workspace_id, node_id)
-        if not node:
+        if not node or (repository_id is not None and node.repository_id != repository_id):
             return {"node": None, "outgoing_edges": [], "incoming_edges": [], "neighbors": []}
 
         outgoing: list[GraphEdge] = []
@@ -330,6 +421,8 @@ class GraphRepository:
                 GraphEdge.workspace_id == workspace_id,
                 GraphEdge.source_node_id == node_id,
             )
+            if repository_id is not None:
+                stmt_out = stmt_out.where(GraphEdge.repository_id == repository_id)
             if edge_types:
                 stmt_out = stmt_out.where(GraphEdge.edge_type.in_(edge_types))
             stmt_out = stmt_out.limit(limit)
@@ -342,6 +435,8 @@ class GraphRepository:
                 GraphEdge.workspace_id == workspace_id,
                 GraphEdge.target_node_id == node_id,
             )
+            if repository_id is not None:
+                stmt_in = stmt_in.where(GraphEdge.repository_id == repository_id)
             if edge_types:
                 stmt_in = stmt_in.where(GraphEdge.edge_type.in_(edge_types))
             stmt_in = stmt_in.limit(limit)
@@ -355,6 +450,8 @@ class GraphRepository:
                 GraphNode.workspace_id == workspace_id,
                 GraphNode.id.in_(neighbor_ids),
             )
+            if repository_id is not None:
+                stmt_n = stmt_n.where(GraphNode.repository_id == repository_id)
             res_n = await self._session.execute(stmt_n)
             neighbors = list(res_n.scalars().all())
 
@@ -373,6 +470,7 @@ class GraphRepository:
         source_id: UUID,
         target_id: UUID,
         max_depth: int = 5,
+        repository_id: Optional[UUID] = None,
     ) -> list[dict[str, Any]]:
         """
         Find shortest path between source and target nodes via BFS.
@@ -382,7 +480,20 @@ class GraphRepository:
         """
         if source_id == target_id:
             node = await self.get_node(workspace_id, source_id)
-            return [{"node": node, "edge": None}] if node else []
+            if not node or (repository_id is not None and node.repository_id != repository_id):
+                return []
+            return [{"node": node, "edge": None}]
+
+        if repository_id is not None:
+            source_node = await self.get_node(workspace_id, source_id)
+            target_node = await self.get_node(workspace_id, target_id)
+            if (
+                not source_node
+                or source_node.repository_id != repository_id
+                or not target_node
+                or target_node.repository_id != repository_id
+            ):
+                return []
 
         # Queue contains paths: list of (current_node_id, edge_that_led_here)
         queue: deque[list[tuple[UUID, Optional[GraphEdge]]]] = deque()
@@ -399,14 +510,13 @@ class GraphRepository:
             curr_node_id, _ = current_path[-1]
 
             # Fetch outgoing edges
-            stmt = (
-                select(GraphEdge)
-                .where(
-                    GraphEdge.workspace_id == workspace_id,
-                    GraphEdge.source_node_id == curr_node_id,
-                )
-                .limit(50)
+            stmt = select(GraphEdge).where(
+                GraphEdge.workspace_id == workspace_id,
+                GraphEdge.source_node_id == curr_node_id,
             )
+            if repository_id is not None:
+                stmt = stmt.where(GraphEdge.repository_id == repository_id)
+            stmt = stmt.limit(50)
             res = await self._session.execute(stmt)
             edges = res.scalars().all()
 
@@ -452,6 +562,7 @@ class GraphRepository:
         max_depth: int = 3,
         edge_types: Optional[list[str]] = None,
         include_tests: bool = True,
+        repository_id: Optional[UUID] = None,
     ) -> dict[str, Any]:
         """
         Compute bounded blast radius / upstream callers and dependent entities.
@@ -460,7 +571,7 @@ class GraphRepository:
         and associated test nodes.
         """
         root_node = await self.get_node(workspace_id, node_id)
-        if not root_node:
+        if not root_node or (repository_id is not None and root_node.repository_id != repository_id):
             return {"root": None, "impacted_nodes": [], "edges": [], "depth_levels": {}}
 
         if edge_types is None:
@@ -479,7 +590,10 @@ class GraphRepository:
                 GraphEdge.workspace_id == workspace_id,
                 GraphEdge.target_node_id.in_(current_layer),
                 GraphEdge.edge_type.in_(edge_types),
-            ).limit(200)
+            )
+            if repository_id is not None:
+                stmt = stmt.where(GraphEdge.repository_id == repository_id)
+            stmt = stmt.limit(200)
             res = await self._session.execute(stmt)
             edges = res.scalars().all()
 
@@ -499,7 +613,10 @@ class GraphRepository:
                 GraphEdge.workspace_id == workspace_id,
                 GraphEdge.target_node_id.in_(visited_nodes.keys()),
                 GraphEdge.edge_type == EdgeType.TESTS,
-            ).limit(100)
+            )
+            if repository_id is not None:
+                stmt_tests = stmt_tests.where(GraphEdge.repository_id == repository_id)
+            stmt_tests = stmt_tests.limit(100)
             res_tests = await self._session.execute(stmt_tests)
             test_edges = res_tests.scalars().all()
             for te in test_edges:
