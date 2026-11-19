@@ -41,10 +41,11 @@ class Settings(BaseSettings):
     embedding_dimension: int = 384
 
     # ── LLM ──────────────────────────────────────────────────────────────────
-    llm_provider: str = "google"  # "google" | "openai"
+    llm_provider: str = "google"  # "google" | "openai" | "groq"
     llm_model: str = "gemini-2.0-flash"
     google_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
 
     # ── RAG ──────────────────────────────────────────────────────────────────
     top_k: int = 5
@@ -87,10 +88,13 @@ class Settings(BaseSettings):
     @property
     def effective_llm_api_key(self) -> Optional[str]:
         """Return the API key for the configured LLM provider."""
-        if self.llm_provider == "google":
+        provider = self.llm_provider.lower()
+        if provider == "google":
             return self.google_api_key
-        if self.llm_provider == "openai":
+        if provider == "openai":
             return self.openai_api_key
+        if provider == "groq":
+            return self.groq_api_key
         return None
 
 
