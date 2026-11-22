@@ -50,6 +50,15 @@ class ChunkRepository:
         )
         return result.scalars().all()
 
+    async def list_by_repository(self, repository_id: UUID) -> Sequence[CodeChunk]:
+        """List all chunks for a repository in a single query ordered by file and index."""
+        result = await self._session.execute(
+            select(CodeChunk)
+            .where(CodeChunk.repository_id == repository_id)
+            .order_by(CodeChunk.file_id.asc(), CodeChunk.chunk_index.asc())
+        )
+        return result.scalars().all()
+
     async def count_by_repository(self, repository_id: UUID) -> int:
         """Return total number of persisted chunks for a repository."""
         result = await self._session.execute(

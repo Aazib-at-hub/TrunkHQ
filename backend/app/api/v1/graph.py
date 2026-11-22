@@ -441,9 +441,14 @@ async def reindex_graph(
     await db.commit()
 
     try:
+        all_chunks = await chunk_dao.list_by_repository(repo_id)
+        chunks_by_file: dict[UUID, list] = {}
+        for chunk in all_chunks:
+            chunks_by_file.setdefault(chunk.file_id, []).append(chunk)
+
         graph_files_payload: list[tuple[str, str, Optional[str]]] = []
         for f in files:
-            chunks = await chunk_dao.list_by_file(f.id)
+            chunks = chunks_by_file.get(f.id, [])
             lines: dict[int, str] = {}
             for chunk in chunks:
                 for offset, text in enumerate(chunk.content.split("\n")):
@@ -510,6 +515,7 @@ async def reindex_graph(
             completed_at=updated_run.completed_at if updated_run else None,
         )
     except Exception as exc:
+        await db.rollback()
         await graph_dao.update_index_run(
             run_id=saved_run.id,
             status="FAILED",

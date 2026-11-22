@@ -98,8 +98,13 @@ class GraphRepository:
         if not nodes:
             return {}, 0, 0
 
-        existing_keys: set[str] = set()
-        incoming_keys = [item["stable_key"] for item in nodes]
+        # Deduplicate by stable_key (last-write-wins) so PostgreSQL bulk ON CONFLICT never collides
+        deduped_nodes: dict[str, dict[str, Any]] = {}
+        for item in nodes:
+            deduped_nodes[item["stable_key"]] = item
+        unique_nodes = list(deduped_nodes.values())
+
+        incoming_keys = list(deduped_nodes.keys())
         existing_res = await self._session.execute(
             select(GraphNode.stable_key).where(
                 GraphNode.workspace_id == workspace_id,
@@ -112,7 +117,8 @@ class GraphRepository:
         created_count = 0
         updated_count = 0
 
-        for item in nodes:
+        rows_to_upsert: list[dict[str, Any]] = []
+        for item in unique_nodes:
             skey = item["stable_key"]
             if skey in existing_keys:
                 updated_count += 1
@@ -120,44 +126,46 @@ class GraphRepository:
                 created_count += 1
                 existing_keys.add(skey)
 
-            node_id = item.get("id") or uuid.uuid4()
-            stmt = (
-                pg_insert(GraphNode)
-                .values(
-                    id=node_id,
-                    workspace_id=workspace_id,
-                    repository_id=repository_id,
-                    node_type=item["node_type"],
-                    stable_key=skey,
-                    name=item["name"],
-                    qualified_name=item.get("qualified_name"),
-                    description=item.get("description"),
-                    properties=item.get("properties", {}),
-                    status=item.get("status", "active"),
-                    source_kind=item.get("source_kind", "code"),
-                    source_uri=item.get("source_uri"),
-                    source_commit=item.get("source_commit"),
-                    content_hash=item.get("content_hash"),
-                )
-                .on_conflict_do_update(
-                    constraint="uq_graph_nodes_workspace_stable_key",
-                    set_={
-                        "name": item["name"],
-                        "qualified_name": item.get("qualified_name"),
-                        "description": item.get("description"),
-                        "properties": item.get("properties", {}),
-                        "status": item.get("status", "active"),
-                        "source_uri": item.get("source_uri"),
-                        "source_commit": item.get("source_commit"),
-                        "content_hash": item.get("content_hash"),
-                        "updated_at": func.now(),
-                    },
-                )
-                .returning(GraphNode.id, GraphNode.stable_key)
+            rows_to_upsert.append(
+                {
+                    "id": item.get("id") or uuid.uuid4(),
+                    "workspace_id": workspace_id,
+                    "repository_id": repository_id,
+                    "node_type": item["node_type"],
+                    "stable_key": skey,
+                    "name": item["name"],
+                    "qualified_name": item.get("qualified_name"),
+                    "description": item.get("description"),
+                    "properties": item.get("properties", {}),
+                    "status": item.get("status", "active"),
+                    "source_kind": item.get("source_kind", "code"),
+                    "source_uri": item.get("source_uri"),
+                    "source_commit": item.get("source_commit"),
+                    "content_hash": item.get("content_hash"),
+                }
             )
+
+        batch_size = 200
+        for start in range(0, len(rows_to_upsert), batch_size):
+            batch = rows_to_upsert[start : start + batch_size]
+            insert_stmt = pg_insert(GraphNode).values(batch)
+            stmt = insert_stmt.on_conflict_do_update(
+                constraint="uq_graph_nodes_workspace_stable_key",
+                set_={
+                    "name": insert_stmt.excluded.name,
+                    "qualified_name": insert_stmt.excluded.qualified_name,
+                    "description": insert_stmt.excluded.description,
+                    "properties": insert_stmt.excluded.properties,
+                    "status": insert_stmt.excluded.status,
+                    "source_uri": insert_stmt.excluded.source_uri,
+                    "source_commit": insert_stmt.excluded.source_commit,
+                    "content_hash": insert_stmt.excluded.content_hash,
+                    "updated_at": func.now(),
+                },
+            ).returning(GraphNode.id, GraphNode.stable_key)
             res = await self._session.execute(stmt)
-            row = res.one()
-            key_to_id[row.stable_key] = row.id
+            for row in res.all():
+                key_to_id[row.stable_key] = row.id
 
         await self._session.flush()
         return key_to_id, created_count, updated_count
@@ -195,52 +203,59 @@ class GraphRepository:
         )
         existing_triples = {(r[0], r[1], r[2]) for r in existing_res.all()}
 
-        count = 0
-        created_count = 0
-        updated_count = 0
+        # Deduplicate by unique relation triple so PostgreSQL bulk ON CONFLICT never collides
+        deduped_edges: dict[tuple[UUID, UUID, str], dict[str, Any]] = {}
         for item in edges:
             triple = (item["source_node_id"], item["target_node_id"], item["edge_type"])
+            deduped_edges[triple] = item
+
+        created_count = 0
+        updated_count = 0
+        rows_to_upsert: list[dict[str, Any]] = []
+        for triple, item in deduped_edges.items():
             if triple in existing_triples:
                 updated_count += 1
             else:
                 created_count += 1
                 existing_triples.add(triple)
 
-            edge_id = item.get("id") or uuid.uuid4()
-            stmt = (
-                pg_insert(GraphEdge)
-                .values(
-                    id=edge_id,
-                    workspace_id=workspace_id,
-                    repository_id=repository_id,
-                    source_node_id=item["source_node_id"],
-                    target_node_id=item["target_node_id"],
-                    edge_type=item["edge_type"],
-                    properties=item.get("properties", {}),
-                    confidence=item.get("confidence", 1.0),
-                    evidence_kind=item.get("evidence_kind", "static"),
-                    source_uri=item.get("source_uri"),
-                    source_commit=item.get("source_commit"),
-                    content_hash=item.get("content_hash"),
-                )
-                .on_conflict_do_update(
-                    constraint="uq_graph_edges_unique_relation",
-                    set_={
-                        "properties": item.get("properties", {}),
-                        "confidence": item.get("confidence", 1.0),
-                        "evidence_kind": item.get("evidence_kind", "static"),
-                        "source_uri": item.get("source_uri"),
-                        "source_commit": item.get("source_commit"),
-                        "content_hash": item.get("content_hash"),
-                        "updated_at": func.now(),
-                    },
-                )
+            rows_to_upsert.append(
+                {
+                    "id": item.get("id") or uuid.uuid4(),
+                    "workspace_id": workspace_id,
+                    "repository_id": repository_id,
+                    "source_node_id": item["source_node_id"],
+                    "target_node_id": item["target_node_id"],
+                    "edge_type": item["edge_type"],
+                    "properties": item.get("properties", {}),
+                    "confidence": item.get("confidence", 1.0),
+                    "evidence_kind": item.get("evidence_kind", "static"),
+                    "source_uri": item.get("source_uri"),
+                    "source_commit": item.get("source_commit"),
+                    "content_hash": item.get("content_hash"),
+                }
+            )
+
+        batch_size = 200
+        for start in range(0, len(rows_to_upsert), batch_size):
+            batch = rows_to_upsert[start : start + batch_size]
+            insert_stmt = pg_insert(GraphEdge).values(batch)
+            stmt = insert_stmt.on_conflict_do_update(
+                constraint="uq_graph_edges_unique_relation",
+                set_={
+                    "properties": insert_stmt.excluded.properties,
+                    "confidence": insert_stmt.excluded.confidence,
+                    "evidence_kind": insert_stmt.excluded.evidence_kind,
+                    "source_uri": insert_stmt.excluded.source_uri,
+                    "source_commit": insert_stmt.excluded.source_commit,
+                    "content_hash": insert_stmt.excluded.content_hash,
+                    "updated_at": func.now(),
+                },
             )
             await self._session.execute(stmt)
-            count += 1
 
         await self._session.flush()
-        return count, created_count, updated_count
+        return len(rows_to_upsert), created_count, updated_count
 
     async def reconcile_deleted_entities(
         self,
