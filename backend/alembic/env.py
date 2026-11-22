@@ -31,12 +31,9 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # Override the sqlalchemy.url from environment variable if available
-database_url = os.environ.get("DATABASE_URL_SYNC")
-if not database_url:
-    async_url = os.environ.get("DATABASE_URL")
-    if async_url:
-        database_url = async_url.replace("postgresql+asyncpg://", "postgresql://")
+database_url = os.environ.get("DATABASE_URL_SYNC") or os.environ.get("DATABASE_URL")
 if database_url:
+    database_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     # Escape '%' for configparser interpolation (e.g. URL-encoded passwords like %40)
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
