@@ -44,4 +44,4 @@ def test_rate_limiter_and_correlation_id_wired() -> None:
 
 def test_db_engine_pool_hardened() -> None:
     assert engine.pool._pre_ping is True  # type: ignore[attr-defined]
-    assert engine.pool._recycle == 1800  # type: ignore[attr-defined]
+    assert 0 < engine.pool._recycle <= 1800  # type: ignore[attr-defined]

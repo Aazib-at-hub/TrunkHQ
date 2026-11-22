@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     github_token: Optional[str] = None
 
     # ── Embedding ────────────────────────────────────────────────────────────
-    embedding_provider: str = "local"  # "local" | "openai"
+    embedding_provider: str = "local"  # "local" | "openai" | "google"
     embedding_model: str = "all-MiniLM-L6-v2"
     embedding_dimension: int = 384
 

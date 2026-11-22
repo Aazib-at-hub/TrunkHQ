@@ -344,14 +344,25 @@ class IngestionPipeline:
                 error=err_msg,
                 traceback=tb,
             )
-            async with self._session_factory() as session:
-                repo_dao = RepositoryRepository(session)
-                await repo_dao.update_status(
-                    repository_id,
-                    status="FAILED",
-                    error_message=err_msg,
+            try:
+                async with self._session_factory() as session:
+                    try:
+                        repo_dao = RepositoryRepository(session)
+                        await repo_dao.update_status(
+                            repository_id,
+                            status="FAILED",
+                            error_message=err_msg,
+                        )
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                        raise
+            except Exception as status_err:
+                logger.error(
+                    "Failed to persist repository FAILED status",
+                    repo_id=str(repository_id),
+                    error=str(status_err),
                 )
-                await session.commit()
 
         finally:
             # Clean up cloned local files

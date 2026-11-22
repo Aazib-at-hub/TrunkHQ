@@ -15,14 +15,14 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# Async engine — connection pool is managed by SQLAlchemy
+# Async engine — connection pool tuned for cloud poolers (e.g. Supabase)
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=5,
     pool_pre_ping=True,  # Detect stale connections
-    pool_recycle=1800,
+    pool_recycle=300,
     pool_timeout=30,
 )
 
