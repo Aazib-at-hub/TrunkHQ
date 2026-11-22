@@ -8,6 +8,8 @@ and supports Matryoshka `outputDimensionality` (default 384) to match existing p
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 
 from app.core.exceptions import InternalServerError
@@ -18,11 +20,14 @@ logger = get_logger("google_embeddings")
 
 DEFAULT_GOOGLE_EMBEDDING_MODEL = "gemini-embedding-001"
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-_MAX_BATCH_SIZE = 100
+_MAX_BATCH_SIZE = 50
+_MAX_RETRIES = 6
+_BASE_RETRY_DELAY = 2.0
+_INTER_BATCH_DELAY = 0.5
 
 
 class GoogleEmbeddingService(BaseEmbeddingService):
-    """Google Gemini API embedding provider (HTTP-only, low memory)."""
+    """Google Gemini API embedding provider (HTTP-only, low memory, rate-limit aware)."""
 
     def __init__(
         self,
@@ -40,6 +45,41 @@ class GoogleEmbeddingService(BaseEmbeddingService):
     def dimension(self) -> int:
         return self._dimension
 
+    async def _post_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        payload: dict,
+    ) -> httpx.Response:
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code not in (429, 500, 502, 503, 504):
+                response.raise_for_status()
+                return response
+
+            if attempt >= _MAX_RETRIES:
+                response.raise_for_status()
+
+            retry_after = response.headers.get("retry-after")
+            try:
+                delay = float(retry_after) if retry_after else _BASE_RETRY_DELAY * (2**attempt)
+            except ValueError:
+                delay = _BASE_RETRY_DELAY * (2**attempt)
+            delay = min(delay, 60.0)
+            logger.warning(
+                "Google Gemini embedding rate-limited; retrying",
+                status_code=response.status_code,
+                attempt=attempt + 1,
+                delay_seconds=delay,
+            )
+            await asyncio.sleep(delay)
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Exceeded max retries for Google Gemini embeddings")
+
     async def _batch_embed(
         self,
         texts: list[str],
@@ -49,11 +89,18 @@ class GoogleEmbeddingService(BaseEmbeddingService):
             return []
 
         url = f"{GEMINI_API_BASE}/models/{self._model_name}:batchEmbedContents"
+        headers = {
+            "x-goog-api-key": self._api_key,
+            "Content-Type": "application/json",
+        }
         all_vectors: list[list[float]] = []
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
-                for start in range(0, len(texts), _MAX_BATCH_SIZE):
+                total_batches = (len(texts) + _MAX_BATCH_SIZE - 1) // _MAX_BATCH_SIZE
+                for batch_idx, start in enumerate(range(0, len(texts), _MAX_BATCH_SIZE)):
+                    if batch_idx > 0 and total_batches > 1:
+                        await asyncio.sleep(_INTER_BATCH_DELAY)
                     chunk = texts[start : start + _MAX_BATCH_SIZE]
                     requests_payload = [
                         {
@@ -64,12 +111,12 @@ class GoogleEmbeddingService(BaseEmbeddingService):
                         }
                         for text in chunk
                     ]
-                    response = await client.post(
+                    response = await self._post_with_retry(
+                        client,
                         url,
-                        params={"key": self._api_key},
-                        json={"requests": requests_payload},
+                        headers,
+                        {"requests": requests_payload},
                     )
-                    response.raise_for_status()
                     data = response.json()
                     embeddings = data.get("embeddings") or []
                     if len(embeddings) != len(chunk):

@@ -53,6 +53,8 @@ def test_get_embedding_service_google_missing_key_raises() -> None:
 
 def test_google_embeddings_embed_texts_and_query_success() -> None:
     mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {}
     mock_resp.raise_for_status = MagicMock()
     mock_resp.json.return_value = {
         "embeddings": [
@@ -72,9 +74,38 @@ def test_google_embeddings_embed_texts_and_query_success() -> None:
 
     assert vectors == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
     call_kwargs = mock_client.post.call_args.kwargs
-    assert call_kwargs["params"] == {"key": "AIza_test"}
+    assert call_kwargs["headers"]["x-goog-api-key"] == "AIza_test"
+    assert "params" not in call_kwargs
     assert call_kwargs["json"]["requests"][0]["outputDimensionality"] == 3
     assert call_kwargs["json"]["requests"][0]["taskType"] == "RETRIEVAL_DOCUMENT"
+
+
+def test_google_embeddings_retries_on_429() -> None:
+    rate_limited = MagicMock()
+    rate_limited.status_code = 429
+    rate_limited.headers = {"retry-after": "0.01"}
+
+    ok_resp = MagicMock()
+    ok_resp.status_code = 200
+    ok_resp.headers = {}
+    ok_resp.raise_for_status = MagicMock()
+    ok_resp.json.return_value = {"embeddings": [{"values": [0.9, 0.8, 0.7]}]}
+
+    mock_client = MagicMock()
+    mock_client.post = AsyncMock(side_effect=[rate_limited, ok_resp])
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    svc = GoogleEmbeddingService(api_key="AIza_test", dimension=3)
+    with (
+        patch("app.embeddings.google_embeddings.httpx.AsyncClient", return_value=mock_client),
+        patch("app.embeddings.google_embeddings.asyncio.sleep", new_callable=AsyncMock) as sleep_mock,
+    ):
+        vector = _run_coro(svc.embed_query("test retry"))
+
+    assert vector == [0.9, 0.8, 0.7]
+    assert mock_client.post.await_count == 2
+    sleep_mock.assert_awaited_once()
 
 
 def test_google_embeddings_error_wraps_internal_error() -> None:
