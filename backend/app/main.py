@@ -172,8 +172,15 @@ def create_app() -> FastAPI:
             error=str(exc),
             exc_info=True,
         )
+        headers: dict[str, str] = {}
+        origin = request.headers.get("origin")
+        if origin and (origin in settings.cors_origins_list or "*" in settings.cors_origins_list):
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+            headers["Vary"] = "Origin"
         return JSONResponse(
             status_code=500,
+            headers=headers,
             content={
                 "error": {
                     "code": "INTERNAL_ERROR",
