@@ -23,7 +23,7 @@ _configured_api_key: Optional[str] = None
 class GoogleLLMService(BaseLLMService):
     """Google Gemini generation service."""
 
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash") -> None:
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash") -> None:
         self._api_key = api_key
         self._model_name = model_name
 

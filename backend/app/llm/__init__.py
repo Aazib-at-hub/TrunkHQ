@@ -36,7 +36,7 @@ def get_llm_service() -> BaseLLMService:
             raise ValueError("GROQ_API_KEY required when LLM_PROVIDER=groq")
         model_name = (
             DEFAULT_GROQ_MODEL
-            if settings.llm_model == "gemini-2.0-flash"
+            if settings.llm_model in ("gemini-2.0-flash", "gemini-2.5-flash")
             else settings.llm_model
         )
         return GroqLLMService(
